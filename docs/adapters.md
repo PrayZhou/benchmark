@@ -40,6 +40,48 @@ task = build_inspect_task(
 
 Each builder receives the validated `TaskSpec`. The solver stores the serialized `TrialResult` in Inspect state metadata, and the scorer maps its score, success answer, status, and result metadata to an Inspect `Score`. Install the optional dependency with `pip install inspect-ai`; importing the integration module itself remains safe without it.
 
+## Coding CLI agent
+
+`agent: cli` runs an external coding CLI as a black box: the harness launches
+the command once and maps its exit code and output to a normal `AgentResult`.
+The command, its argument template, and how the prompt is delivered are all
+task-supplied through the `cli:` block. Two documented starting points live in
+`benchmark.adapters.agents.profiles` (`claude` and `codex`), so the invocation
+does not have to be rediscovered per task:
+
+```yaml
+id: claude-refactor
+instruction: Rename the function and keep the tests green.
+agent: cli
+environment_type: local
+cli:
+  command: claude
+  args: ["{instruction}"]
+  prompt_mode: argv        # argv | stdin | prompt_file
+  prompt_flag: "-p"        # claude -p ... (non-interactive print mode)
+  timeout: 300             # optional; clamped to the trial budget
+```
+
+`command` may be a bare name (resolved on `PATH`) or an absolute path.
+`prompt_mode` chooses the delivery channel: `argv` substitutes `{instruction}`
+into the args, `stdin` pipes it, and `prompt_file` writes it to a temp file and
+substitutes `{prompt_file}`. Any profile key can be overridden in the `cli:`
+block.
+
+Known limitations:
+
+- The CLI runs **on the host**, so `agent: cli` requires
+  `environment_type: local`. A container environment reports a `/workspace`
+  path that does not exist on the host; `build_agent` rejects the combination
+  at build time, and container-delegated execution is not implemented yet.
+- A missing binary, a timeout, or an unexpected exit code all become an
+  `AgentResult(status="error")` rather than crashing the harness.
+- The `claude` and `codex` profiles in `profiles.py` are **unverified**. No
+  coding CLI is installed and egress is blocked in the development environment,
+  so the presets encode the documented non-interactive invocations but have not
+  been run against the real tools. Confirm them against the installed CLI
+  version before relying on them.
+
 ## Behavioral findings
 
 `GraderResult.violations` and `GraderResult.uncertainties` carry structured

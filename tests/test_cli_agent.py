@@ -414,3 +414,15 @@ def test_factory_keeps_a_tighter_cli_timeout(tmp_path: Path) -> None:
 
     assert isinstance(agent, CLIAgent)
     assert agent.timeout == 15
+
+
+# --- documented profiles ---------------------------------------------------
+
+
+def test_profiles_are_valid_cli_configs() -> None:
+    from benchmark.adapters.agents.cli import CLIAgent
+    from benchmark.adapters.agents.profiles import PROFILES
+
+    assert {"claude", "codex"} <= set(PROFILES)
+    for profile in PROFILES.values():
+        CLIAgent("do the thing", **profile)  # must not raise
