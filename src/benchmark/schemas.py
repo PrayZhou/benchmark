@@ -167,3 +167,5 @@ class RunSummary(BaseModel):
     failures_by_category: dict[str, int] = Field(default_factory=dict)
     total_attempts: int = 0
     retried_groups: int = 0
+    violations_by_kind: dict[str, int] = Field(default_factory=dict)
+    uncertain_trials: int = 0

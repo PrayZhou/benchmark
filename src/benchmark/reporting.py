@@ -38,6 +38,13 @@ def summarize(results: list[TrialResult]) -> RunSummary:
     for result in decided:
         if result.failure_category:
             failures[result.failure_category] = failures.get(result.failure_category, 0) + 1
+    violations_by_kind: dict[str, int] = {}
+    uncertain_trials = 0
+    for result in decided:
+        for finding in result.violations:
+            violations_by_kind[finding.kind] = violations_by_kind.get(finding.kind, 0) + 1
+        if result.uncertainties:
+            uncertain_trials += 1
     return RunSummary(
         total=total,
         completed=sum(result.status == "completed" for result in decided),
@@ -48,6 +55,8 @@ def summarize(results: list[TrialResult]) -> RunSummary:
         failures_by_category=failures,
         total_attempts=len(results),
         retried_groups=sum(1 for count in counts.values() if count > 1),
+        violations_by_kind=violations_by_kind,
+        uncertain_trials=uncertain_trials,
     )
 
 
