@@ -1,0 +1,4 @@
+# Task definitions live in tasks/<name>/ directories.
+# instruction.md owns the instruction; tests/test.sh owns the verifier.
+task_dirs:
+  - ../tasks/hello_task

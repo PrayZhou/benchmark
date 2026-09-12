@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from .adapters.agents.scripted import ScriptedAgent
+from .adapters.environments.local import LocalEnvironment
+from .adapters.graders.command import CommandGrader
+from .interfaces import AgentAdapter, Environment, Grader
+from .schemas import TaskSpec
+
+
+def build_agent(task: TaskSpec) -> AgentAdapter:
+    if task.agent == "scripted":
+        return ScriptedAgent(task.environment.get("actions", [{"type": "finish"}]))
+    if task.agent == "llm":
+        from .adapters.agents.backends import resolve_backend
+        from .adapters.agents.llm import LLMAdapter
+        provider = task.provider
+        if not provider.model:
+            raise ValueError("provider.model is required for llm agent")
+        # ``provider.provider`` selects the backend; an unknown name is rejected
+        # here, before any trial runs, instead of silently using OpenAI-compatible.
+        backend_name, backend_factory = resolve_backend(provider.provider)
+        return LLMAdapter(task.instruction, model=provider.model, timeout=provider.timeout_seconds,
+                          max_output_tokens=provider.max_output_tokens, seed=task.seed,
+                          pass_seed=provider.pass_seed, base_url=provider.base_url,
+                          api_key_env=provider.api_key_env, provider=backend_name,
+                          backend_factory=backend_factory)
+    if task.agent == "mcp":
+        from .adapters.agents.mcp import MCPAgent
+        return MCPAgent()  # honest scaffold; raises its clear refusal
+    if task.agent == "multi_agent":
+        from .adapters.agents.multi_agent import MultiAgentAdapter
+        return MultiAgentAdapter.from_task(task)
+    raise ValueError(f"unknown agent adapter: {task.agent}")
+
+
+def build_environment(task: TaskSpec, root: Path) -> Environment:
+    if task.environment_type == "local":
+        return LocalEnvironment(
+            root,
+            command_timeout=_command_timeout(task),
+            env_allowlist=task.environment.get("env_allowlist"),
+            env=task.environment.get("env"),
+        )
+    if task.environment_type == "docker":
+        from .adapters.environments.docker import DockerEnvironment
+        image = task.environment.get("image")
+        if not image:
+            raise ValueError("environment.image is required for docker")
+        return DockerEnvironment(root, image=image, network=task.environment.get("network", "none"),
+                                 command_timeout=_command_timeout(task))
+    if task.environment_type == "harbor":
+        from .adapters.environments.harbor import HarborEnvironment
+        return HarborEnvironment(task.environment)  # type: ignore[return-value]  # scaffold
+    if task.environment_type == "browsergym":
+        from .adapters.environments.browsergym import BrowserGymEnvironment
+        return BrowserGymEnvironment(task.environment)  # type: ignore[return-value]  # scaffold
+    if task.environment_type == "osworld":
+        from .adapters.environments.osworld import OSWorldEnvironment
+        return OSWorldEnvironment(task.environment)  # type: ignore[return-value]  # scaffold
+    if task.environment_type == "mcp":
+        from .adapters.environments.mcp import MCPEnvironment
+        return MCPEnvironment(task.environment)  # type: ignore[return-value]  # scaffold
+    raise ValueError(f"unknown environment adapter: {task.environment_type}")
+
+
+def build_grader(task: TaskSpec) -> Grader:
+    if task.grader_type == "command":
+        command = task.grader.get("command", ["bash", "-lc", "test -f marker.txt"])
+        threshold = task.grader.get("pass_threshold")
+        return CommandGrader(command, isolated=task.environment_type != "local",
+                             score_pattern=task.grader.get("score_pattern"),
+                             pass_threshold=1.0 if threshold is None else float(threshold))
+    if task.grader_type == "state":
+        from .adapters.graders.state import StateGrader
+        return StateGrader(task.grader.get("expected", {}))
+    if task.grader_type == "composite":
+        from .adapters.graders.composite import CompositeGrader
+        graders = [build_grader(TaskSpec(**{**task.model_dump(), "grader_type": item["type"], "grader": item}))
+                   for item in task.grader.get("graders", [])]
+        return CompositeGrader(graders, weights=task.grader.get("weights"),
+                               threshold=task.grader.get("threshold"))
+    raise ValueError(f"unknown grader adapter: {task.grader_type}")
+
+
+def _command_timeout(task: TaskSpec) -> float:
+    value = task.environment.get("command_timeout")
+    return 30.0 if value is None else float(value)

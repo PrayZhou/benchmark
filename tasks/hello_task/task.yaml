@@ -1,0 +1,10 @@
+id: hello.create_marker
+environment:
+  actions:
+    - type: command
+      command: [bash, -lc, "printf READY > marker.txt"]
+    - type: finish
+limits:
+  max_steps: 5
+  timeout_seconds: 30
+seed: 42
