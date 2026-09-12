@@ -339,7 +339,7 @@ def test_non_string_cwd_is_coerced_and_cannot_raise(tmp_path: Path) -> None:
 
 def test_factory_routes_cli_agent(tmp_path: Path) -> None:
     script = _write_stub(tmp_path)
-    task = TaskSpec(id="t", instruction="x", agent="cli",
+    task = TaskSpec(id="t", instruction="x", agent="cli", environment_type="local",
                     cli={"command": script, "args": ["{instruction}"], "prompt_mode": "argv"})
 
     agent = build_agent(task)
@@ -350,7 +350,7 @@ def test_factory_routes_cli_agent(tmp_path: Path) -> None:
 
 def test_factory_reads_the_cli_instruction(tmp_path: Path) -> None:
     script = _write_stub(tmp_path)
-    task = TaskSpec(id="t", instruction="the real instruction", agent="cli",
+    task = TaskSpec(id="t", instruction="the real instruction", agent="cli", environment_type="local",
                     cli={"command": script, "args": ["{instruction}"], "prompt_mode": "argv"})
 
     payload = _payload(_run(build_agent(task)))
@@ -358,16 +358,35 @@ def test_factory_reads_the_cli_instruction(tmp_path: Path) -> None:
     assert payload["argv"] == ["the real instruction"]
 
 
+def test_factory_rejects_cli_agent_in_a_non_local_environment(tmp_path: Path) -> None:
+    """The CLI runs on the host, so a container path like /workspace cannot work."""
+    task = TaskSpec(id="t", instruction="x", agent="cli",
+                    cli={"command": _write_stub(tmp_path)})  # environment_type defaults to docker
+
+    with pytest.raises(ValueError, match="requires environment_type 'local'"):
+        build_agent(task)
+
+
+def test_factory_builds_cli_agent_in_a_local_environment(tmp_path: Path) -> None:
+    script = _write_stub(tmp_path)
+    task = TaskSpec(id="t", instruction="x", agent="cli", environment_type="local",
+                    cli={"command": script})
+
+    agent = build_agent(task)
+
+    assert isinstance(agent, CLIAgent)
+
+
 def test_factory_requires_a_command() -> None:
     with pytest.raises(ValueError, match="command"):
-        build_agent(TaskSpec(id="t", instruction="x", agent="cli"))
+        build_agent(TaskSpec(id="t", instruction="x", agent="cli", environment_type="local"))
 
 
 def test_factory_clamps_cli_timeout_to_the_trial_budget(tmp_path: Path) -> None:
     """A CLI timeout longer than the trial must not outlive the trial."""
     script = _write_stub(tmp_path)
-    task = TaskSpec(id="t", instruction="x", agent="cli", cli={"command": script, "timeout": 600},
-                    limits={"timeout_seconds": 120})
+    task = TaskSpec(id="t", instruction="x", agent="cli", environment_type="local",
+                    cli={"command": script, "timeout": 600}, limits={"timeout_seconds": 120})
 
     agent = build_agent(task)
 
@@ -377,8 +396,8 @@ def test_factory_clamps_cli_timeout_to_the_trial_budget(tmp_path: Path) -> None:
 
 def test_factory_defaults_cli_timeout_to_the_trial_budget(tmp_path: Path) -> None:
     script = _write_stub(tmp_path)
-    task = TaskSpec(id="t", instruction="x", agent="cli", cli={"command": script},
-                    limits={"timeout_seconds": 90})
+    task = TaskSpec(id="t", instruction="x", agent="cli", environment_type="local",
+                    cli={"command": script}, limits={"timeout_seconds": 90})
 
     agent = build_agent(task)
 
@@ -388,8 +407,8 @@ def test_factory_defaults_cli_timeout_to_the_trial_budget(tmp_path: Path) -> Non
 
 def test_factory_keeps_a_tighter_cli_timeout(tmp_path: Path) -> None:
     script = _write_stub(tmp_path)
-    task = TaskSpec(id="t", instruction="x", agent="cli", cli={"command": script, "timeout": 15},
-                    limits={"timeout_seconds": 120})
+    task = TaskSpec(id="t", instruction="x", agent="cli", environment_type="local",
+                    cli={"command": script, "timeout": 15}, limits={"timeout_seconds": 120})
 
     agent = build_agent(task)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .adapters.agents.scripted import ScriptedAgent
 from .adapters.environments.local import LocalEnvironment
@@ -33,14 +34,15 @@ def build_agent(task: TaskSpec) -> AgentAdapter:
         from .adapters.agents.cli import CLIAgent
         if not task.cli.get("command"):
             raise ValueError("cli.command is required for agent 'cli'")
-        options = dict(task.cli)
-        # All of a CLI agent's launches happen inside one act(), so the trial
-        # deadline is only enforced by the process timeout. Never let the CLI
-        # outlive the trial budget.
-        configured_timeout = options.get("timeout")
-        options["timeout"] = (min(float(configured_timeout), task.limits.timeout_seconds)
-                              if configured_timeout is not None else task.limits.timeout_seconds)
-        return CLIAgent(task.instruction, **options)
+        # The CLI runs on the host, but a container environment reports a
+        # container path (``/workspace``) that does not exist here. Reject the
+        # combination at build time instead of failing later as an opaque OSError.
+        if task.environment_type != "local":
+            raise ValueError(
+                "agent 'cli' executes the coding CLI on the host and requires "
+                "environment_type 'local'; container-delegated execution is not implemented yet"
+            )
+        return CLIAgent(task.instruction, **_cli_options(task))
     if task.agent == "multi_agent":
         from .adapters.agents.multi_agent import MultiAgentAdapter
         return MultiAgentAdapter.from_task(task)
@@ -123,3 +125,17 @@ def build_grader(task: TaskSpec) -> Grader:
 def _command_timeout(task: TaskSpec) -> float:
     value = task.environment.get("command_timeout")
     return 30.0 if value is None else float(value)
+
+
+def _cli_options(task: TaskSpec) -> dict[str, Any]:
+    """``task.cli`` with the process timeout clamped to the trial budget.
+
+    All of a CLI agent's launches happen inside one ``act()``, so the trial
+    deadline is only enforced by the process timeout. Never let the CLI outlive
+    the trial.
+    """
+    options = dict(task.cli)
+    configured_timeout = options.get("timeout")
+    options["timeout"] = (min(float(configured_timeout), task.limits.timeout_seconds)
+                          if configured_timeout is not None else task.limits.timeout_seconds)
+    return options

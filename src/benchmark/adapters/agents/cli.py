@@ -49,6 +49,9 @@ class CLIAgent:
     are visible without plumbing the workspace through ``build_agent``. An
     explicit ``cli.cwd`` wins over the observation.
 
+    The CLI runs on the host, so this adapter requires ``environment_type:
+    local``; container-delegated execution is not implemented yet.
+
     A broken CLI never crashes the harness: a missing binary, an unexpected exit
     code, and a timeout all become ``AgentResult(status="error")``.
     """
