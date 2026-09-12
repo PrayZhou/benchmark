@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import shutil as _shutil
+import subprocess as _subprocess
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -57,3 +61,79 @@ def test_reset_reports_a_missing_daemon_actionably(tmp_path: Path, monkeypatch) 
     environment = DockerEnvironment(tmp_path, image="alpine:3", docker_binary=None)
     with pytest.raises(RuntimeError, match="Docker"):
         environment.reset(TaskSpec(id="t", instruction="x"))
+
+
+def _daemon_available() -> bool:
+    binary = resolve_docker_binary()
+    if not binary:
+        return False
+    try:
+        done = _subprocess.run([binary, "version", "--format", "{{.Server.Version}}"],
+                               capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, _subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+integration = pytest.mark.skipif(not _daemon_available(), reason="docker daemon not available")
+
+
+def _pull_env(binary: str) -> dict[str, str]:
+    """Environment whose PATH includes the docker CLI's own directory.
+
+    Docker Desktop keeps ``docker-credential-desktop`` next to the CLI, which
+    is absent from PATH on a default install; a pull cannot authenticate
+    without it. The resolver only checks that the binary exists, so confirm it
+    is executable before trusting its directory.
+    """
+    env = dict(os.environ)
+    bin_dir = os.path.dirname(binary)
+    if bin_dir and _shutil.which(os.path.basename(binary), path=bin_dir):
+        env["PATH"] = os.pathsep.join([bin_dir, env.get("PATH", "")])
+    return env
+
+
+@cache
+def _image_available(image: str) -> bool:
+    """Inspect the base image, pulling it at most once per session.
+
+    A missing image and a failed pull are both reported as unavailable so the
+    caller can skip rather than fail when the host is offline.
+    """
+    binary = resolve_docker_binary()
+    if not binary:
+        return False
+    if _subprocess.run([binary, "image", "inspect", image],
+                       capture_output=True, timeout=30, check=False).returncode == 0:
+        return True
+    return _subprocess.run([binary, "pull", image], capture_output=True,
+                           timeout=300, check=False, env=_pull_env(binary)).returncode == 0
+
+
+@integration
+def test_container_runs_commands_and_verifier_is_read_only(tmp_path: Path) -> None:
+    image = os.getenv("BENCHMARK_TEST_IMAGE", "python:3.12-slim")
+    if not _image_available(image):
+        pytest.skip("base image unavailable offline")
+    environment = DockerEnvironment(tmp_path, image=image, command_timeout=30)
+    environment.reset(TaskSpec(id="t", instruction="x", seed=7))
+    try:
+        ok = environment.execute({"type": "command", "command": ["sh", "-c", "printf READY"]})
+        assert ok["returncode"] == 0 and ok["stdout"] == "READY"
+
+        bad = environment.execute({"type": "command", "command": ["sh", "-c", "exit 3"]})
+        assert bad["returncode"] == 3 and bad["ok"] is False
+
+        (tmp_path / "marker.txt").write_text("READY")
+        verified = environment.verify_command(["sh", "-c", "cat marker.txt"])
+        assert verified.stdout.strip() == "READY"
+
+        denied = environment.verify_command(["sh", "-c", "printf x >> marker.txt"])
+        assert denied.returncode != 0, "verifier must not be able to write the workspace"
+    finally:
+        environment.cleanup()
+
+    # The spec requires cleanup to remove the container, not just stop it.
+    gone = _subprocess.run([resolve_docker_binary(), "inspect", environment.container_name],
+                           capture_output=True, timeout=30, check=False)
+    assert gone.returncode != 0, "cleanup must remove the container"
