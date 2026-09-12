@@ -64,7 +64,12 @@ def _snapshot(root: Path | None) -> dict[str, str]:
             continue
         for path in sorted(directory.rglob("*")):
             if path.is_file() and not path.is_symlink():
-                hashes[path.relative_to(root).as_posix()] = _sha256(path)
+                try:
+                    digest = _sha256(path)
+                except OSError:
+                    # The file vanished between the listing and the read.
+                    continue
+                hashes[path.relative_to(root).as_posix()] = digest
     return hashes
 
 
@@ -145,10 +150,12 @@ class PolicyGrader:
             try:
                 if path.stat().st_size > _MAX_SCAN_BYTES:
                     continue
+                digest = _sha256(path)
             except OSError:
+                # The file vanished between the listing and the read.
                 continue
             scanned += 1
-            if _sha256(path) in protected:
+            if digest in protected:
                 findings.append(Finding(
                     kind="verifier_copy", severity="high", source="policy",
                     evidence=f"{path.relative_to(root).as_posix()} matches a protected task file",

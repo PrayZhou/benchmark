@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from benchmark.adapters.graders.policy import PolicyGrader
 from benchmark.factories import build_grader
 from benchmark.schemas import TaskSpec, TraceEvent
@@ -85,6 +87,45 @@ def test_policy_grader_reports_forbidden_network(tmp_path: Path) -> None:
     grader = PolicyGrader(task_dir, forbidden_network=True)
     result = grader.evaluate(TaskSpec(id="t", instruction="x"), None, [_action(0, ["wget", "http://x"])])
     assert [f.kind for f in result.violations] == ["network_attempt"]
+
+
+def test_policy_grader_reports_evaluation_dos(tmp_path: Path) -> None:
+    task_dir = _task_dir(tmp_path)
+    grader = PolicyGrader(task_dir)
+    result = grader.evaluate(TaskSpec(id="t", instruction="x"), None, [_action(0, ["killall", "python"])])
+    assert [f.kind for f in result.violations] == ["evaluation_dos"]
+    assert result.failure_category == "policy_violation"
+
+
+def test_policy_grader_survives_files_vanishing_mid_scan(tmp_path: Path,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    from benchmark.adapters.graders import policy
+
+    task_dir = _task_dir(tmp_path)
+    grader = PolicyGrader(task_dir)
+    # One protected file added after the baseline and one workspace file; both
+    # disappear (OSError on open) before evaluate can hash them.
+    (task_dir / "tests" / "late.sh").write_text("later\n")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "victim.txt").write_text("payload")
+
+    real_sha256 = policy._sha256
+
+    def vanish(path: Path) -> str:
+        if path.name in {"late.sh", "victim.txt"}:
+            raise FileNotFoundError(path)
+        return real_sha256(path)
+
+    monkeypatch.setattr(policy, "_sha256", vanish)
+
+    class _Environment:
+        root = workspace
+
+    result = grader.evaluate(TaskSpec(id="t", instruction="x"), _Environment(), [])
+    assert result.success is True
+    assert result.violations == []
+    assert result.uncertainties == []
 
 
 def test_policy_grader_fail_closed_can_be_disabled(tmp_path: Path) -> None:
