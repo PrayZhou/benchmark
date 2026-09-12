@@ -1,13 +1,17 @@
 # Agent Benchmark Harness
 
-一个面向工具型 Agent 的可插拔评测骨架。当前 MVP 使用本地确定性环境验证完整链路，后续可接入 Docker、Inspect AI、Harbor、BrowserGym、OSWorld、MCP 和多 Agent 运行时。
+一个面向工具型 Agent 的可插拔评测骨架。隔离环境默认为 Docker（`TaskSpec.environment_type` 默认 `"docker"`），`local` 环境必须显式 opt-in；在此基础上跑通完整链路，后续可接入 Inspect AI、Harbor、BrowserGym、OSWorld、MCP 和多 Agent 运行时。
 
 ## 当前能力
 
 - 版本化任务 schema（Pydantic）
-- `tasks/<name>/` 任务目录为单一真相来源
+- `tasks/<name>/` 任务目录为单一真相来源；`tasks/<name>/workspace/` 起始文件在 `reset()` 时拷入 trial 工作区
+- **Docker 为默认环境，`local` 为显式 opt-in**：`TaskSpec.environment_type` 默认 `"docker"`；`DockerEnvironment` 用 `resolve_docker_binary`（显式参数 → `BENCHMARK_DOCKER_BIN` → `PATH` → macOS Docker Desktop 路径）定位 CLI，并在 `reset()` 时对 daemon 做 preflight，失败时报出可操作的错误；容器默认非 root、`--network none`、`--cap-drop ALL`、`--security-opt no-new-privileges`，verifier 用只读挂载的独立容器
 - Agent / Environment / Grader 解耦
 - scripted agent baseline
+- `agent: cli` 通用编码 CLI 适配器（`CLIAgent`），以 `argv` / `stdin` / `prompt_file` 三种模式投递 prompt，`profiles.py` 提供 `claude` / `codex` 起始配置；它在宿主机执行，因此要求 `environment_type: local`
+- 任务集：`tasks/` 下 4 个任务（`fix_fizzbuzz` / `parse_log_counts` / `makefile_target` / `seed_reproducible`），每个都带 `oracle.sh` 参考解；`configs/tasks.yaml` 通过 `tasks_root` 加载
+- `benchmark oracle --tasks-root tasks`：对每个任务运行其 oracle 与自带 verifier，任一任务失败则以非零码退出（任务集自洽性自检）
 - `provider` 名称真正选择 LLM backend（`openai` / `openai-compatible`，未配置时回退默认；未知名称在构建期报错，不再静默走 OpenAI 兼容）
 - `RunConfig.dataset` 作为 provenance 写入 `report.json` 与 SQLite 索引，并可用 `benchmark compare --dataset` 过滤
 - observation/action/tool-result JSONL trajectory
@@ -19,7 +23,7 @@
 - run 级指纹：`harness_version`、git commit、provider 配置摘要、依赖版本与 run config
 - artifact 落盘上限（单文件 / 总量 / 数量）与 ignore 规则，轨迹 JSONL 按字符截断
 - 结构化日志（`--log-level` / `--log-json`），核心链路带 `run_id` / `trial_id` 上下文
-- SQLite 跨 run 索引与横向对比（`benchmark index` / `benchmark compare`）
+- SQLite 跨 run 索引与横向对比（`benchmark index` / `benchmark compare`）：索引 schema v2，`trials` 增加 `violations` / `uncertainties` / `violation_count`，`runs` 增加 `violation_count` / `uncertain_trials`；旧库（含 `PRAGMA user_version = 0`）在打开时自动迁移；`compare --violations` 只比较「任一次 attempt 记录过 violation」的 run（与按最终 attempt 计的成功率口径不同，见「统计口径」）
 - CI（ruff lint + mypy 类型检查 + pytest）与 `uv.lock` 依赖锁
 - 可扩展的 CLI
 
@@ -52,7 +56,7 @@ reports/example/traces/<trial-id>.jsonl
 reports/example/artifacts/<task-id>/<run>/<attempt>/index.json
 ```
 
-当前示例使用 `LocalEnvironment` 以便在没有 Docker 的机器上先验证 harness。`tasks/hello_task/Dockerfile` 是后续 Docker adapter 的环境基线；它不会被 LocalEnvironment 自动使用，仅记录在 `metadata.dockerfile`。
+**环境默认值：Docker。** `TaskSpec.environment_type` 默认为 `"docker"`，真实任务默认跑在容器里，`local` 必须显式 opt-in。上面的 smoke run 之所以无需 Docker 即可完成，是因为 `configs/example.yaml` 与 `tasks/hello_task/task.yaml` 都显式写了 `environment_type: local`（随附的 4 个任务同样如此）。`tasks/hello_task/Dockerfile` 是一个 docker 环境基线，仅在任务选用 `environment_type: docker` 并配置 `environment.image`（预构建镜像名）时才相关；它由任务记录在 `metadata.dockerfile`，harness 不会自动 build。
 
 ## 任务目录
 
@@ -82,6 +86,8 @@ task_dirs:
 ## 统计口径
 
 `report.json` 的 `trials` 保留每一次 attempt 作为审计轨迹，而 `summary` 按 `parent_trial_id` 分组、每组只计最终 attempt。因此「重试 3 次后成功」计为 1 次成功而非 1/3，`total_attempts` 与 `retried_groups` 单独暴露重试量。
+
+outcome 指标（`success_rate` / `average_score` / `failures_by_category`）始终按最终 attempt 计；而 violation / uncertainty 计数是 **any-attempt** 语义：某次 attempt 记录过的 violation 不会因为后续重试成功而被洗掉，`runs.violation_count` 等于该 run 所有 `trials.violation_count` 之和，`compare --violations` 也据此过滤。
 
 ## 重放与重评分
 
@@ -127,10 +133,22 @@ TaskSpec → Runner → AgentAdapter ↔ EnvironmentAdapter → Independent Grad
 
 ## 安全边界
 
-当前 LocalEnvironment 只适合确定性 smoke test，不是安全沙箱。它不再继承宿主的全部环境变量：默认只透传一组白名单（`PATH`、`HOME`、`LANG` 等），任务需要的额外变量必须通过 `environment.env` 显式声明，因此 `OPENAI_API_KEY` / `COMATE_API_KEY` 等凭证不会被 agent 或任务直接读走。接入真实 Agent 或不可信任务前仍必须使用独立容器/VM，并默认：非 root、无网络、无 Docker socket、资源限制、独立临时卷、独立 verifier 和完整 manifest。
+**Docker 是默认环境，`local` 是显式 opt-in，且 `LocalEnvironment` 仍然不是安全沙箱。** `DockerEnvironment` 默认非 root（`10001:10001`）、`--network none`、`--cap-drop ALL`、`--security-opt no-new-privileges`，并带 CPU / 内存 / PID 限制；verifier 在只读挂载（`:ro`）的独立容器里运行。把 `environment_type` 从默认的 `"docker"` 改成 `"local"` 只是显式选择了「不具备隔离」的确定性 smoke 路径，并不等于获得沙箱。
+
+`LocalEnvironment` 不再继承宿主的全部环境变量：默认只透传一组白名单（`PATH`、`HOME`、`LANG` 等），任务需要的额外变量必须通过 `environment.env` 显式声明，因此 `OPENAI_API_KEY` / `COMATE_API_KEY` 等凭证不会被 agent 或任务直接读走。接入真实 Agent 或不可信任务前仍必须使用独立容器/VM，并默认：非 root、无网络、无 Docker socket、资源限制、独立临时卷、独立 verifier 和完整 manifest。
+
+## Known limitations（已知限制）
+
+以下限制是当前实现的真实边界，逐条记录在案，不做能力上的过度声明：
+
+- **Docker 集成测试会在没有 daemon 或基础镜像时 SKIP。** `tests/test_docker_environment.py` 的集成用例在 `resolve_docker_binary` 找不到可用 daemon 时跳过；镜像不可得时同样跳过（默认 `python:3.12-slim`，可用 `BENCHMARK_TEST_IMAGE` 覆盖）。首次真实运行需要一次镜像拉取，而本内网主机没有缓存镜像、拉取被阻断，因此在把 `BENCHMARK_TEST_IMAGE` 指向本地/内网镜像之前，真实容器路径不会被实际执行。安全相关参数的单元测试通过注入 fake docker runner 完成，不需要 daemon。
+- **`agent: cli` 要求 `environment_type: local`。** CLI 适配器在宿主机上直接启动进程；容器环境报告的是容器内路径（如 `/workspace`），宿主上并不存在。`build_agent` 在构建期拒绝 `agent: cli` 与非 `local` 的组合，容器内委托执行尚未实现。
+- **`claude` / `codex` profiles 未经真实 CLI 验证。** 开发主机未安装任何编码 CLI，网络出口也被阻断，`profiles.py` 中的预设只编码了文档记载的非交互式调用方式，尚未对真实命令行运行过；使用前请按本机安装的 CLI 版本确认。
+- **`LocalEnvironment` 仍然不是安全沙箱。** 把它降级为显式 opt-in 只是减少误用，并不等于安全。staging 会把 `tasks/<name>/workspace/` 拷进 trial 工作区；符号链接不会被跟随（也不会被复制），因此 fixture 无法越过自己的目录树。
+- **`makefile_target` 的 verifier 按文本检查 recipe 声明的输入。** 它在 Makefile 的 tab 缩进行里要求出现 `$(INPUT)` 或字面量 `input.txt`；因此惯用的 `sort $< > $(OUTPUT)` 会被拒绝，必须写成 instruction 中给出的 `$(INPUT)` / `input.txt` 形式。
 
 ## 后续路线
 
-1. `DockerEnvironment` 尚无测试；注入式 backend 已就绪，`LLMAdapter` 已由 `tests/test_llm_adapter.py` 覆盖。
+1. Docker 路径已具备单元测试（注入 fake runner 固定安全参数）与一个受 daemon/镜像门控的集成测试；`LLMAdapter` 注入式 backend 由 `tests/test_llm_adapter.py` 覆盖。
 2. `GraderResult.violations` / `uncertainties` 由 `PolicyGrader`（确定性）与可选的 `JudgeGrader`（LLM）产出：行为违规默认 fail-closed（`failure_category="policy_violation"`，不重试），不确定性只标注置信度、不改变判分。
 3. Harbor、BrowserGym、OSWorld、MCP 和固定拓扑 multi-agent 仍是诚实 scaffold：`adapters.errors.unavailable` 统一了「缺可选依赖」与「依赖已装但未接线」两种拒绝，`agent: mcp` / `environment_type: mcp` / `agent: multi_agent` 路由已对称；真实 SDK 桥接待实现。

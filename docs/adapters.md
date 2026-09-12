@@ -65,22 +65,19 @@ cli:
 `command` may be a bare name (resolved on `PATH`) or an absolute path.
 `prompt_mode` chooses the delivery channel: `argv` substitutes `{instruction}`
 into the args, `stdin` pipes it, and `prompt_file` writes it to a temp file and
-substitutes `{prompt_file}`. Any profile key can be overridden in the `cli:`
-block.
+substitutes `{prompt_file}`. A profile in `profiles.py` is a **starting point to
+copy**, not a mode the harness merges for you: copy its keys into your own
+`cli:` block and edit them there. Read the `profiles.py` module docstring before
+relying on a preset.
 
-Known limitations:
+A missing binary, a timeout, or an unexpected exit code all become an
+`AgentResult(status="error")` rather than crashing the harness.
 
-- The CLI runs **on the host**, so `agent: cli` requires
-  `environment_type: local`. A container environment reports a `/workspace`
-  path that does not exist on the host; `build_agent` rejects the combination
-  at build time, and container-delegated execution is not implemented yet.
-- A missing binary, a timeout, or an unexpected exit code all become an
-  `AgentResult(status="error")` rather than crashing the harness.
-- The `claude` and `codex` profiles in `profiles.py` are **unverified**. No
-  coding CLI is installed and egress is blocked in the development environment,
-  so the presets encode the documented non-interactive invocations but have not
-  been run against the real tools. Confirm them against the installed CLI
-  version before relying on them.
+The host-only execution requirement (`agent: cli` needs
+`environment_type: local`), the unverified profiles, and the other current
+boundaries are recorded once in the README's
+[Known limitations](../README.md#known-limitations已知限制) section; this
+document does not repeat them.
 
 ## Behavioral findings
 
