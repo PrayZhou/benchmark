@@ -769,18 +769,55 @@ def test_policy_violation_fails_closed_and_is_not_retried(tmp_path: Path) -> Non
     )
     from benchmark import orchestrator
 
-    original = orchestrator.build_grader
+    class _NoExecuteEnvironment:
+        """Records actions without running them: the violating argv is data, not a process."""
+
+        def __init__(self) -> None:
+            self.root = tmp_path / "workspace"
+            self.root.mkdir(exist_ok=True)
+            self.executed: list[dict] = []
+            self._done = False
+
+        def reset(self, task_: TaskSpec) -> None:
+            self._done = False
+
+        def observe(self) -> dict:
+            return {"cwd": str(self.root)}
+
+        def execute(self, action: dict, *, timeout: float | None = None) -> dict:
+            del timeout
+            self.executed.append(action)
+            if action.get("type") == "finish":
+                self._done = True
+            return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
+
+        def terminal(self) -> bool:
+            return self._done
+
+        def artifacts(self) -> list[str]:
+            return []
+
+        def cleanup(self) -> None:
+            pass
+
+    original_grader = orchestrator.build_grader
+    original_environment = orchestrator.build_environment
 
     def with_policy(task_: TaskSpec):
-        policy = PolicyGrader(None, fail_closed=True)
-        return policy if task_.id == "test.policy" else original(task_)
+        return PolicyGrader(None, fail_closed=True) if task_.id == "test.policy" else original_grader(task_)
+
+    def with_stub_environment(task_: TaskSpec, root: Path):
+        del task_, root
+        return _NoExecuteEnvironment()
 
     orchestrator.build_grader = with_policy
+    orchestrator.build_environment = with_stub_environment
     try:
         results = run_tasks([task], tmp_path, tmp_path / "out",
                             RunConfig(retry=RetryPolicy(max_attempts=3)))
     finally:
-        orchestrator.build_grader = original
+        orchestrator.build_grader = original_grader
+        orchestrator.build_environment = original_environment
     assert len(results) == 1
     assert results[0].success is False
     assert results[0].failure_category == "policy_violation"
