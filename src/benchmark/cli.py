@@ -99,6 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--db", type=Path, default=DEFAULT_INDEX_PATH)
     compare.add_argument("--no-tasks", action="store_true", help="omit the per-task matrix")
     compare.add_argument("--dataset", help="only compare runs with this dataset label")
+    compare.add_argument("--violations", action="store_true",
+                         help="only compare runs whose trials recorded a violation")
 
     return parser
 
@@ -127,7 +129,7 @@ def main() -> None:
         return
     if args.command == "compare":
         payload = RunIndex(args.db).compare(args.run_ids or None, include_tasks=not args.no_tasks,
-                                            dataset=args.dataset)
+                                            dataset=args.dataset, violations_only=args.violations)
         print(json.dumps(payload, indent=2, default=str))
         return
     if args.command is None:

@@ -21,7 +21,7 @@ from .schemas import TrialResult
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 DEFAULT_INDEX_PATH = Path("reports") / "index.sqlite3"
 
 _SCHEMA = """
@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS runs (
     failures_by_category TEXT NOT NULL DEFAULT '{}',
     config TEXT NOT NULL DEFAULT '{}',
     manifest_path TEXT,
-    report_path TEXT
+    report_path TEXT,
+    violation_count INTEGER NOT NULL DEFAULT 0,
+    uncertain_trials INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS trials (
     trial_id TEXT NOT NULL,
@@ -70,6 +72,9 @@ CREATE TABLE IF NOT EXISTS trials (
     model TEXT,
     termination_reason TEXT,
     trace_path TEXT,
+    violations TEXT NOT NULL DEFAULT '[]',
+    uncertainties TEXT NOT NULL DEFAULT '[]',
+    violation_count INTEGER NOT NULL DEFAULT 0,
     -- Trial ids derive deterministically from (task, seed, attempt), so the
     -- same id legitimately appears in more than one run. Identity is the
     -- (run_id, trial_id) pair, not the trial id alone.
@@ -79,24 +84,39 @@ CREATE INDEX IF NOT EXISTS idx_trials_run_id ON trials(run_id);
 CREATE INDEX IF NOT EXISTS idx_trials_task_id ON trials(task_id);
 """
 
+# Columns added after the v1 schema shipped, keyed by table. ``_migrate`` adds
+# any that are missing so a pre-v2 database keeps working without a rebuild.
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "runs": {
+        "violation_count": "INTEGER NOT NULL DEFAULT 0",
+        "uncertain_trials": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "trials": {
+        "violations": "TEXT NOT NULL DEFAULT '[]'",
+        "uncertainties": "TEXT NOT NULL DEFAULT '[]'",
+        "violation_count": "INTEGER NOT NULL DEFAULT 0",
+    },
+}
+
 _RUN_COLUMNS = (
     "run_id", "indexed_at", "created_at", "harness_version", "git_commit", "python_version",
     "platform", "dataset", "task_count", "trial_count", "total", "successful", "success_rate",
     "average_score", "average_duration_seconds", "total_attempts", "retried_groups",
     "failures_by_category", "config", "manifest_path", "report_path",
+    "violation_count", "uncertain_trials",
 )
 
 _TRIAL_COLUMNS = (
     "trial_id", "run_id", "task_id", "agent_id", "seed", "run_index", "attempt",
     "parent_trial_id", "status", "success", "score", "steps", "tool_calls", "duration_seconds",
     "input_tokens", "output_tokens", "failure_category", "provider", "model",
-    "termination_reason", "trace_path",
+    "termination_reason", "trace_path", "violations", "uncertainties", "violation_count",
 )
 
 _RUN_FIELDS = tuple(
     "trial_id run_id task_id agent_id seed run_index attempt parent_trial_id status success score "
     "steps tool_calls duration_seconds input_tokens output_tokens failure_category provider model "
-    "termination_reason trace_path".split()
+    "termination_reason trace_path violations uncertainties violation_count".split()
 )
 
 
@@ -108,12 +128,33 @@ class RunIndex:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection, connection:
             connection.executescript(_SCHEMA)
+            self._migrate(connection)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        """Bring a pre-v2 database up to date in place.
+
+        ``executescript(_SCHEMA)`` creates the current shape for a fresh
+        database but is a no-op for an existing one, so older databases gain
+        the findings columns here. Each ``ALTER TABLE`` is guarded by a
+        ``PRAGMA table_info`` check, which keeps a partially-migrated database
+        (columns added, version not yet bumped) safe to reopen.
+        """
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version >= int(SCHEMA_VERSION):
+            return
+        for table, columns in _ADDED_COLUMNS.items():
+            existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            for column, definition in columns.items():
+                if column not in existing:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        connection.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
 
     def index_run(self, run_dir: Path) -> dict[str, Any]:
         """Ingest (or re-ingest) one run directory. Idempotent per ``run_id``."""
@@ -149,6 +190,8 @@ class RunIndex:
             "config": json.dumps(run_config),
             "manifest_path": str(manifest_path),
             "report_path": str(report_path) if report_path.exists() else None,
+            "violation_count": sum(summary.violations_by_kind.values()),
+            "uncertain_trials": summary.uncertain_trials,
         }
         trial_rows = [self._trial_row(result, run_id) for result in trials]
         with closing(self._connect()) as connection, connection:
@@ -179,14 +222,15 @@ class RunIndex:
         return [self._run_view(row) for row in rows]
 
     def compare(self, run_ids: Sequence[str] | None = None, *, include_tasks: bool = True,
-                dataset: str | None = None) -> dict[str, Any]:
+                dataset: str | None = None, violations_only: bool = False) -> dict[str, Any]:
         """Summarise runs side by side, with an optional per-task matrix.
 
         ``dataset`` filters to runs carrying that label when no explicit
-        ``run_ids`` are given.
+        ``run_ids`` are given. ``violations_only`` restricts the selection to
+        runs whose trials recorded at least one violation.
         """
         with closing(self._connect()) as connection:
-            runs = self._select_runs(connection, run_ids, dataset=dataset)
+            runs = self._select_runs(connection, run_ids, dataset=dataset, violations_only=violations_only)
             selected = [run["run_id"] for run in runs]
             payload: dict[str, Any] = {"runs": [self._run_view(run) for run in runs]}
             if include_tasks and selected:
@@ -194,14 +238,18 @@ class RunIndex:
             return payload
 
     def _select_runs(self, connection: sqlite3.Connection, run_ids: Sequence[str] | None,
-                     *, dataset: str | None = None) -> list[sqlite3.Row]:
+                     *, dataset: str | None = None, violations_only: bool = False) -> list[sqlite3.Row]:
         order = "ORDER BY COALESCE(created_at, run_id), run_id"
         if not run_ids:
-            if dataset is None:
-                return connection.execute(f"SELECT * FROM runs {order}").fetchall()
-            return connection.execute(
-                f"SELECT * FROM runs WHERE dataset = ? {order}", (dataset,)
-            ).fetchall()
+            filters: list[str] = []
+            params: list[Any] = []
+            if dataset is not None:
+                filters.append("dataset = ?")
+                params.append(dataset)
+            if violations_only:
+                filters.append("violation_count > 0")
+            where = f"WHERE {' AND '.join(filters)} " if filters else ""
+            return connection.execute(f"SELECT * FROM runs {where}{order}", tuple(params)).fetchall()
         placeholders = ",".join("?" * len(run_ids))
         rows = connection.execute(
             f"SELECT * FROM runs WHERE run_id IN ({placeholders})", tuple(run_ids)
@@ -210,9 +258,13 @@ class RunIndex:
         missing = [run_id for run_id in run_ids if run_id not in found]
         if missing:
             raise KeyError(f"unknown run_id(s): {', '.join(missing)}")
-        # Preserve caller order.
+        # Preserve caller order. An explicitly requested run that merely has no
+        # violations is filtered out, not reported as unknown.
         by_id = {row["run_id"]: row for row in rows}
-        return [by_id[run_id] for run_id in run_ids]
+        selected = [by_id[run_id] for run_id in run_ids]
+        if violations_only:
+            selected = [row for row in selected if (row["violation_count"] or 0) > 0]
+        return selected
 
     def _task_breakdown(self, connection: sqlite3.Connection, run_ids: Sequence[str]) -> dict[str, Any]:
         placeholders = ",".join("?" * len(run_ids))
@@ -255,6 +307,11 @@ class RunIndex:
         data = result.model_dump(mode="json")
         data["run_id"] = run_id
         data["success"] = int(result.success)
+        # Findings are stored as JSON text so the schema stays flat; the count
+        # is denormalised for cheap filtering in ``compare``.
+        data["violations"] = json.dumps(data.get("violations") or [])
+        data["uncertainties"] = json.dumps(data.get("uncertainties") or [])
+        data["violation_count"] = len(result.violations)
         return tuple(data.get(field) for field in _RUN_FIELDS)
 
     @staticmethod

@@ -8,16 +8,77 @@ import pytest
 from benchmark.index import RunIndex
 from benchmark.manifest import RunManifest
 from benchmark.reporting import write_report
-from benchmark.schemas import RunConfig, TaskSpec, TrialResult
+from benchmark.schemas import Finding, RunConfig, TaskSpec, TrialResult
+
+# The schema as it shipped before findings were indexed. Kept verbatim so the
+# migration can be exercised against a real v1 database.
+_V1_SCHEMA = """
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    indexed_at TEXT NOT NULL,
+    created_at TEXT,
+    harness_version TEXT,
+    git_commit TEXT,
+    python_version TEXT,
+    platform TEXT,
+    dataset TEXT,
+    task_count INTEGER NOT NULL DEFAULT 0,
+    trial_count INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    successful INTEGER NOT NULL DEFAULT 0,
+    success_rate REAL NOT NULL DEFAULT 0,
+    average_score REAL NOT NULL DEFAULT 0,
+    average_duration_seconds REAL NOT NULL DEFAULT 0,
+    total_attempts INTEGER NOT NULL DEFAULT 0,
+    retried_groups INTEGER NOT NULL DEFAULT 0,
+    failures_by_category TEXT NOT NULL DEFAULT '{}',
+    config TEXT NOT NULL DEFAULT '{}',
+    manifest_path TEXT,
+    report_path TEXT
+);
+CREATE TABLE IF NOT EXISTS trials (
+    trial_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL,
+    agent_id TEXT,
+    seed INTEGER,
+    run_index INTEGER,
+    attempt INTEGER,
+    parent_trial_id TEXT,
+    status TEXT,
+    success INTEGER NOT NULL DEFAULT 0,
+    score REAL NOT NULL DEFAULT 0,
+    steps INTEGER NOT NULL DEFAULT 0,
+    tool_calls INTEGER NOT NULL DEFAULT 0,
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    failure_category TEXT,
+    provider TEXT,
+    model TEXT,
+    termination_reason TEXT,
+    trace_path TEXT,
+    PRIMARY KEY (run_id, trial_id)
+);
+CREATE INDEX IF NOT EXISTS idx_trials_run_id ON trials(run_id);
+CREATE INDEX IF NOT EXISTS idx_trials_task_id ON trials(task_id);
+"""
+
+
+def _finding(kind: str = "policy_violation", *, severity: str = "high", step: int | None = 1) -> Finding:
+    return Finding(kind=kind, severity=severity, source="grader", evidence=f"evidence for {kind}", step=step)
 
 
 def _trial(trial_id: str, *, task_id: str = "t", success: bool = True, attempt: int = 1,
-           parent: str | None = None, score: float = 1.0) -> TrialResult:
+           parent: str | None = None, score: float = 1.0,
+           violations: list[Finding] | None = None,
+           uncertainties: list[Finding] | None = None) -> TrialResult:
     return TrialResult(
         task_id=task_id, trial_id=trial_id, agent_id="scripted", seed=0,
         status="completed" if success else "error", success=success, score=score,
         attempt=attempt, parent_trial_id=parent, duration_seconds=1.0,
         failure_category=None if success else "test_failure",
+        violations=violations or [], uncertainties=uncertainties or [],
     )
 
 
@@ -155,3 +216,140 @@ def test_cli_index_and_compare_round_trip(tmp_path: Path, monkeypatch, capsys) -
     compared = json.loads(capsys.readouterr().out)
     assert compared["runs"][0]["run_id"] == "run-1"
     assert compared["tasks"]["t"]["run-1"]["success_rate"] == 1.0
+
+
+def test_index_records_violations_and_uncertainties(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path / "run1", "run-1", [
+        _trial("t1", violations=[_finding("edited_tests")], uncertainties=[_finding("judge_unsure", severity="low")]),
+        _trial("t2", success=False, score=0.0,
+               violations=[_finding("secret_exfil"), _finding("destructive_cmd")]),
+    ])
+    index = RunIndex(tmp_path / "index.sqlite3")
+    index.index_run(run_dir)
+
+    runs = index.list_runs()
+    assert runs[0]["violation_count"] >= 1
+    assert runs[0]["violation_count"] == 3
+    assert runs[0]["uncertain_trials"] == 1
+
+    with sqlite3.connect(tmp_path / "index.sqlite3") as connection:
+        trials = {
+            row[0]: row
+            for row in connection.execute(
+                "SELECT trial_id, violations, uncertainties, violation_count FROM trials WHERE run_id = 'run-1'"
+            )
+        }
+    assert trials["t1"][3] == 1
+    assert trials["t2"][3] == 2
+    assert [item["kind"] for item in json.loads(trials["t1"][1])] == ["edited_tests"]
+    assert [item["kind"] for item in json.loads(trials["t2"][2])] == []
+
+
+def test_reindexing_keeps_violation_counts_idempotent(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path / "run1", "run-1", [_trial("t1", violations=[_finding()])])
+    index = RunIndex(tmp_path / "index.sqlite3")
+    index.index_run(run_dir)
+    index.index_run(run_dir)
+
+    assert index.list_runs()[0]["violation_count"] == 1
+    with sqlite3.connect(tmp_path / "index.sqlite3") as connection:
+        count = connection.execute("SELECT COUNT(*) FROM trials WHERE run_id = 'run-1'").fetchone()[0]
+        total = connection.execute("SELECT SUM(violation_count) FROM trials WHERE run_id = 'run-1'").fetchone()[0]
+    assert count == 1
+    assert total == 1
+
+
+def _make_v1_database(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.executescript(_V1_SCHEMA)
+        connection.execute("PRAGMA user_version = 1")
+
+
+def test_open_sets_schema_version_to_2(tmp_path: Path) -> None:
+    db = tmp_path / "index.sqlite3"
+    RunIndex(db)
+    with sqlite3.connect(db) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_opening_a_v1_database_migrates_and_indexes(tmp_path: Path) -> None:
+    db = tmp_path / "index.sqlite3"
+    _make_v1_database(db)
+    run_dir = _make_run(tmp_path / "run1", "run-1", [_trial("t1", violations=[_finding()])])
+
+    index = RunIndex(db)
+    index.index_run(run_dir)
+
+    with sqlite3.connect(db) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        trial_columns = {row[1] for row in connection.execute("PRAGMA table_info(trials)")}
+        run_columns = {row[1] for row in connection.execute("PRAGMA table_info(runs)")}
+    assert {"violations", "uncertainties", "violation_count"} <= trial_columns
+    assert {"violation_count", "uncertain_trials"} <= run_columns
+    assert index.list_runs()[0]["violation_count"] == 1
+
+
+def test_migration_tolerates_a_partially_migrated_database(tmp_path: Path) -> None:
+    db = tmp_path / "index.sqlite3"
+    _make_v1_database(db)
+    # A previous migration attempt added one column but never bumped the version.
+    with sqlite3.connect(db) as connection:
+        connection.execute("ALTER TABLE runs ADD COLUMN violation_count INTEGER NOT NULL DEFAULT 0")
+
+    index = RunIndex(db)
+    run_dir = _make_run(tmp_path / "run1", "run-1", [_trial("t1", violations=[_finding()])])
+    index.index_run(run_dir)
+
+    with sqlite3.connect(db) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert index.list_runs()[0]["violation_count"] == 1
+
+
+def test_compare_violations_only_excludes_clean_runs(tmp_path: Path) -> None:
+    _make_run(tmp_path / "clean", "run-clean", [_trial("c1")])
+    _make_run(tmp_path / "dirty", "run-dirty", [_trial("d1", violations=[_finding()])])
+    index = RunIndex(tmp_path / "index.sqlite3")
+    index.index_runs([tmp_path / "clean", tmp_path / "dirty"])
+
+    payload = index.compare(violations_only=True)
+
+    assert [run["run_id"] for run in payload["runs"]] == ["run-dirty"]
+    assert payload["runs"][0]["violation_count"] == 1
+
+
+def test_compare_violations_only_composes_with_explicit_run_ids(tmp_path: Path) -> None:
+    _make_run(tmp_path / "clean", "run-clean", [_trial("c1")])
+    _make_run(tmp_path / "dirty", "run-dirty", [_trial("d1", violations=[_finding()])])
+    index = RunIndex(tmp_path / "index.sqlite3")
+    index.index_runs([tmp_path / "clean", tmp_path / "dirty"])
+
+    payload = index.compare(["run-dirty", "run-clean"], violations_only=True)
+
+    assert [run["run_id"] for run in payload["runs"]] == ["run-dirty"]
+
+
+def test_compare_without_violations_only_keeps_every_run(tmp_path: Path) -> None:
+    _make_run(tmp_path / "clean", "run-clean", [_trial("c1")])
+    _make_run(tmp_path / "dirty", "run-dirty", [_trial("d1", violations=[_finding()])])
+    index = RunIndex(tmp_path / "index.sqlite3")
+    index.index_runs([tmp_path / "clean", tmp_path / "dirty"])
+
+    payload = index.compare()
+
+    assert [run["run_id"] for run in payload["runs"]] == ["run-clean", "run-dirty"]
+    assert payload["runs"][0]["uncertain_trials"] == 0
+
+
+def test_cli_compare_violations_flag(tmp_path: Path, monkeypatch, capsys) -> None:
+    from benchmark import cli
+
+    _make_run(tmp_path / "clean", "run-clean", [_trial("c1")])
+    _make_run(tmp_path / "dirty", "run-dirty", [_trial("d1", violations=[_finding()])])
+    db = tmp_path / "index.sqlite3"
+    RunIndex(db).index_runs([tmp_path / "clean", tmp_path / "dirty"])
+
+    monkeypatch.setattr(sys, "argv", ["benchmark", "compare", "--db", str(db), "--violations"])
+    cli.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [run["run_id"] for run in payload["runs"]] == ["run-dirty"]
