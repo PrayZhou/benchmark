@@ -93,7 +93,10 @@ def test_verify_command_mounts_read_only(tmp_path: Path) -> None:
     assert "--network" in verify and verify[verify.index("--network") + 1] == "none"
 
 
-def test_reset_reports_a_missing_daemon_actionably(tmp_path: Path) -> None:
+def test_reset_reports_a_missing_daemon_actionably(tmp_path: Path, monkeypatch) -> None:
+    # On this host the Docker Desktop fallback path exists, so a real resolve
+    # would succeed. Force the "no binary at all" case explicitly.
+    monkeypatch.setattr("benchmark.adapters.environments.docker.resolve_docker_binary", lambda *a, **k: None)
     environment = DockerEnvironment(tmp_path, image="alpine:3", docker_binary=None)
     with pytest.raises(RuntimeError, match="Docker"):
         environment.reset(TaskSpec(id="t", instruction="x"))
