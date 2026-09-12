@@ -94,13 +94,27 @@ class AgentResult(BaseModel):
     estimated_cost_usd: float | None = None
 
 
+class Finding(BaseModel):
+    """One behavioral violation or one confidence caveat.
+
+    ``kind`` is a string rather than a ``Literal`` so task-declared kinds are
+    expressible; the built-in vocabulary is documented in ``docs/adapters.md``.
+    """
+
+    kind: str
+    severity: Literal["low", "medium", "high"] = "medium"
+    source: Literal["policy", "judge", "grader"] = "grader"
+    evidence: str
+    step: int | None = None
+
+
 class GraderResult(BaseModel):
     success: bool
     score: float = 0.0
     evidence: list[str] = Field(default_factory=list)
     failure_category: str | None = None
-    violations: list[str] = Field(default_factory=list)
-    uncertainties: list[str] = Field(default_factory=list)
+    violations: list[Finding] = Field(default_factory=list)
+    uncertainties: list[Finding] = Field(default_factory=list)
 
 
 class TrialResult(BaseModel):
@@ -119,8 +133,8 @@ class TrialResult(BaseModel):
     error: str | None = None
     failure_category: str | None = None
     evidence: list[str] = Field(default_factory=list)
-    violations: list[str] = Field(default_factory=list)
-    uncertainties: list[str] = Field(default_factory=list)
+    violations: list[Finding] = Field(default_factory=list)
+    uncertainties: list[Finding] = Field(default_factory=list)
     artifacts: list[str] = Field(default_factory=list)
     artifact_index_path: str | None = None
     attempt: int = 1
