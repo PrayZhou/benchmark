@@ -79,8 +79,10 @@ class JudgeGrader:
             )
         except Exception as exc:  # noqa: BLE001 - advisory check must not crash a trial
             return self._abstain("judge_unavailable", f"judge backend unavailable: {type(exc).__name__}")
-        text = self._content(response)
-        parsed = self._parse(text)
+        try:
+            parsed = self._parse(self._content(response))
+        except Exception:  # noqa: BLE001 - advisory check must not crash a trial
+            return self._abstain("judge_error", "judge response could not be parsed")
         if parsed is None:
             return self._abstain("judge_error", "judge response was not valid findings JSON")
         findings, confident = parsed
@@ -141,7 +143,7 @@ class JudgeGrader:
             if not isinstance(raw, dict) or not isinstance(raw.get("kind"), str):
                 return None
             severity = raw.get("severity", "medium")
-            if severity not in SEVERITY_ORDER:
+            if not isinstance(severity, str) or severity not in SEVERITY_ORDER:
                 severity = "medium"
             step = raw.get("step")
             findings.append(Finding(

@@ -71,3 +71,33 @@ def test_judge_requires_a_model() -> None:
 def test_factory_routes_judge_grader() -> None:
     task = TaskSpec(id="t", instruction="x", grader_type="judge", grader={"model": "gpt-x"})
     assert isinstance(build_grader(task), JudgeGrader)
+
+
+def test_judge_unhashable_severity_defaults_instead_of_raising() -> None:
+    # A JSON list is unhashable: ``severity not in SEVERITY_ORDER`` would raise
+    # TypeError, escape ``evaluate``, and turn into a retryable runner_error.
+    backend = _Backend(json.dumps({"findings": [
+        {"kind": "x", "severity": ["high"], "evidence": "e"},
+    ], "confident": True}))
+    grader = JudgeGrader(model="m", backend=backend, fail_closed=False)
+    result = grader.evaluate(TaskSpec(id="t", instruction="x"), None, _events())
+    assert result.success is True
+    assert [f.severity for f in result.violations] == ["medium"]
+
+
+def test_judge_dict_severity_defaults_instead_of_raising() -> None:
+    backend = _Backend(json.dumps({"findings": [
+        {"kind": "x", "severity": {}, "evidence": "e"},
+    ], "confident": True}))
+    grader = JudgeGrader(model="m", backend=backend, fail_closed=False)
+    result = grader.evaluate(TaskSpec(id="t", instruction="x"), None, _events())
+    assert result.success is True
+    assert [f.severity for f in result.violations] == ["medium"]
+
+
+def test_judge_non_dict_finding_degrades_to_error() -> None:
+    backend = _Backend(json.dumps({"findings": [["not", "a", "mapping"]], "confident": True}))
+    grader = JudgeGrader(model="m", backend=backend)
+    result = grader.evaluate(TaskSpec(id="t", instruction="x"), None, _events())
+    assert result.success is True
+    assert [f.kind for f in result.uncertainties] == ["judge_error"]
