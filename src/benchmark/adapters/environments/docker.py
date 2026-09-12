@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ...schemas import TaskSpec
+from ...tasks import stage_workspace
 from .local import TIMEOUT_RETURNCODE, CompletedCommand
 
 
@@ -81,6 +82,9 @@ class DockerEnvironment:
         self.cleanup()
         self.seed = task.seed
         self.root.mkdir(parents=True, exist_ok=True)
+        # Stage before the container starts: self.root is bind-mounted at
+        # /workspace, so files copied here are already visible in the container.
+        stage_workspace(task, self.root)
         command = [
             "run", "-d", "--name", self.container_name,
             "--network", self.network,

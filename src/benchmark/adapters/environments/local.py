@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ...schemas import TaskSpec
+from ...tasks import stage_workspace
 
 # Exit code returned when a command exceeds its timeout, mirroring GNU timeout.
 TIMEOUT_RETURNCODE = 124
@@ -54,6 +55,7 @@ class LocalEnvironment:
 
     def reset(self, task: TaskSpec) -> None:
         self.seed = task.seed
+        stage_workspace(task, self.root)
         self._state = {"task_id": task.id, "completed": False, "seed": task.seed}
 
     def observe(self) -> dict[str, Any]:
