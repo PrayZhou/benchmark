@@ -208,11 +208,11 @@ def dedupe_findings(findings: list[Finding]) -> list[Finding]:
 In `composite.py`, import the helper and `Finding`:
 
 ```python
-from .findings import SEVERITY_ORDER, dedupe_findings
+from .findings import dedupe_findings
 from ...schemas import Finding
 ```
 
-(`SEVERITY_ORDER` is used by Task 4; importing it here is harmless. If ruff flags it as unused in this task, import only `dedupe_findings` now and add `SEVERITY_ORDER` in Task 4.)
+(`SEVERITY_ORDER` lives in `findings.py` for Task 4 to import; `composite.py` does not use it, so importing it here would be a ruff `F401`.)
 
 Replace the failure-category block and the return statement in `CompositeGrader.evaluate`:
 
@@ -396,7 +396,6 @@ Create `tests/test_policy_grader.py`:
 ```python
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 from benchmark.adapters.graders.policy import PolicyGrader
@@ -876,7 +875,6 @@ from __future__ import annotations
 
 import json
 
-import pydantic
 import pytest
 
 from benchmark.adapters.graders.judge import JudgeGrader
