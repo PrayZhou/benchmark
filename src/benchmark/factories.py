@@ -81,6 +81,16 @@ def build_grader(task: TaskSpec) -> Grader:
                    for item in task.grader.get("graders", [])]
         return CompositeGrader(graders, weights=task.grader.get("weights"),
                                threshold=task.grader.get("threshold"))
+    if task.grader_type == "policy":
+        from .adapters.graders.policy import PolicyGrader
+        return PolicyGrader(
+            task.metadata.get("task_dir"),
+            forbidden_paths=task.grader.get("forbidden_paths"),
+            forbidden_commands=task.grader.get("forbidden_commands"),
+            forbidden_network=bool(task.grader.get("forbidden_network", False)),
+            fail_closed=bool(task.grader.get("fail_closed", True)),
+            severity_threshold=task.grader.get("severity_threshold", "medium"),
+        )
     raise ValueError(f"unknown grader adapter: {task.grader_type}")
 
 
