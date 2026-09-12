@@ -135,7 +135,7 @@ def test_factory_wires_partial_credit_and_weighted_composites() -> None:
 def test_factory_reads_command_timeout_and_env_options(tmp_path: Path) -> None:
     from benchmark.factories import build_environment
 
-    task = TaskSpec(id="t", instruction="x",
+    task = TaskSpec(id="t", instruction="x", environment_type="local",
                     environment={"command_timeout": 0.5, "env_allowlist": ["PATH", "TASK_TOKEN"],
                                  "env": {"TASK_TOKEN": "visible"}})
     built = build_environment(task, tmp_path)
@@ -209,3 +209,15 @@ def test_command_grader_flags_silent_verifier_output(tmp_path: Path) -> None:
     result = CommandGrader(["bash", "-lc", "exit 0"], isolated=False).evaluate(task, _environment(tmp_path), [])
     assert result.success is True
     assert [f.kind for f in result.uncertainties] == ["verifier_no_output"]
+
+
+def test_environment_defaults_to_docker(tmp_path: Path) -> None:
+    from benchmark.adapters.environments.docker import DockerEnvironment
+    from benchmark.factories import build_environment
+
+    task = TaskSpec(id="t", instruction="x", environment={"image": "alpine:3"})
+    assert isinstance(build_environment(task, tmp_path), DockerEnvironment)
+
+    local = TaskSpec(id="t", instruction="x", environment_type="local")
+    from benchmark.adapters.environments.local import LocalEnvironment
+    assert isinstance(build_environment(local, tmp_path), LocalEnvironment)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -7,6 +9,26 @@ from typing import Any
 
 from ...schemas import TaskSpec
 from .local import TIMEOUT_RETURNCODE, CompletedCommand
+
+
+def resolve_docker_binary(configured: str | None = None) -> str | None:
+    """Find a usable docker CLI without assuming it is on PATH."""
+    if configured:
+        return configured
+    env = os.getenv("BENCHMARK_DOCKER_BIN")
+    if env:
+        return env
+    found = shutil.which("docker")
+    if found:
+        return found
+    for candidate in (
+        "/Applications/Docker.app/Contents/Resources/bin/docker",
+        "/usr/local/bin/docker",
+        "/opt/homebrew/bin/docker",
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    return None
 
 
 class DockerEnvironment:
@@ -28,6 +50,7 @@ class DockerEnvironment:
         pids_limit: int = 128,
         user: str = "10001:10001",
         command_timeout: float = 30.0,
+        docker_binary: str | None = None,
     ) -> None:
         self.root = root.resolve()
         self.image = image
@@ -37,16 +60,27 @@ class DockerEnvironment:
         self.pids_limit = pids_limit
         self.user = user
         self.command_timeout = command_timeout
+        self.docker_binary = resolve_docker_binary(docker_binary)
         self.container_name = f"agent-benchmark-{uuid.uuid4().hex[:12]}"
         self._state: dict[str, Any] = {}
         self._started = False
         self.seed: int = 0
 
+    def preflight(self) -> None:
+        """Fail fast and actionably when no usable Docker daemon is reachable."""
+        try:
+            self._docker(["version", "--format", "{{.Server.Version}}"], timeout=10)
+        except (RuntimeError, TimeoutError) as exc:
+            raise RuntimeError(
+                f"Docker preflight failed; point at a working CLI with BENCHMARK_DOCKER_BIN "
+                f"(resolved binary: {self.docker_binary!r}) and start the daemon: {exc}"
+            ) from exc
+
     def reset(self, task: TaskSpec) -> None:
+        self.preflight()
         self.cleanup()
         self.seed = task.seed
         self.root.mkdir(parents=True, exist_ok=True)
-        self._docker(["version"], timeout=10)
         command = [
             "run", "-d", "--name", self.container_name,
             "--network", self.network,
@@ -126,21 +160,28 @@ class DockerEnvironment:
         return dict(self._state)
 
     def cleanup(self) -> None:
-        if self._started:
-            subprocess.run(["docker", "rm", "-f", self.container_name], capture_output=True, text=True, check=False)
+        if self._started and self.docker_binary is not None:
+            # Best-effort teardown: a failed ``rm`` must not mask the trial's
+            # real result, so this never raises.
+            subprocess.run([self.docker_binary, "rm", "-f", self.container_name],
+                           capture_output=True, text=True, check=False)
         self._started = False
 
-    @staticmethod
-    def _docker(args: list[str], *, timeout: float, check: bool = True) -> subprocess.CompletedProcess[str]:
+    def _docker(self, args: list[str], *, timeout: float, check: bool = True) -> subprocess.CompletedProcess[str]:
+        binary = self.docker_binary
+        if binary is None:
+            raise RuntimeError("Docker CLI not found; set BENCHMARK_DOCKER_BIN or pass docker_binary")
         try:
-            completed = subprocess.run(["docker", *args], capture_output=True, text=True,
+            completed = subprocess.run([binary, *args], capture_output=True, text=True,
                                        timeout=timeout, check=False)
             if check and completed.returncode != 0:
-                raise subprocess.CalledProcessError(completed.returncode, ["docker", *args],
+                raise subprocess.CalledProcessError(completed.returncode, [binary, *args],
                                                      output=completed.stdout, stderr=completed.stderr)
             return completed
         except FileNotFoundError as exc:
-            raise RuntimeError("Docker CLI is not installed") from exc
+            raise RuntimeError(
+                f"Docker CLI not found at {binary!r}; set BENCHMARK_DOCKER_BIN or pass docker_binary"
+            ) from exc
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError(f"Docker command timed out after {timeout}s") from exc
         except subprocess.CalledProcessError as exc:

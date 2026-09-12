@@ -14,6 +14,7 @@ def _scripted_run(root: Path, *, trace_max_chars: int = 20_000) -> tuple[Path, s
     task = TaskSpec(
         id="replay.marker",
         instruction="create a marker",
+        environment_type="local",
         environment={"actions": [
             {"type": "command", "command": ["bash", "-lc", "printf READY > marker.txt"]},
             {"type": "command", "command": ["bash", "-lc", "test \"$(cat marker.txt)\" = READY"]},
@@ -61,6 +62,7 @@ def test_truncated_stdout_is_not_a_divergence(tmp_path: Path) -> None:
     task = TaskSpec(
         id="replay.noisy",
         instruction="be noisy",
+        environment_type="local",
         environment={"actions": [
             {"type": "command", "command": ["bash", "-lc", "printf '%0.sx' {1..200}"]},
             {"type": "finish"},

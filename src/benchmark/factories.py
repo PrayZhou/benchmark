@@ -49,7 +49,8 @@ def build_environment(task: TaskSpec, root: Path) -> Environment:
         if not image:
             raise ValueError("environment.image is required for docker")
         return DockerEnvironment(root, image=image, network=task.environment.get("network", "none"),
-                                 command_timeout=_command_timeout(task))
+                                 command_timeout=_command_timeout(task),
+                                 docker_binary=task.environment.get("docker_binary"))
     if task.environment_type == "harbor":
         from .adapters.environments.harbor import HarborEnvironment
         return HarborEnvironment(task.environment)  # type: ignore[return-value]  # scaffold

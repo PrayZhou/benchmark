@@ -72,6 +72,7 @@ def test_seed_reaches_the_environment_and_derived_runs_differ(tmp_path: Path) ->
     task = TaskSpec(
         id="test.seed",
         instruction="record the seed",
+        environment_type="local",
         seed=42,
         environment={"actions": [
             {"type": "command", "command": ["bash", "-lc", 'printf "$BENCHMARK_SEED" > seed.txt']},
@@ -351,6 +352,7 @@ def test_run_tasks_retries_agent_errors_by_default(tmp_path: Path, monkeypatch) 
     task = TaskSpec(
         id="test.retry-error",
         instruction="x",
+        environment_type="local",
         environment={"actions": [
             {"type": "command", "command": ["bash", "-lc", "printf READY > marker.txt"]},
             {"type": "finish"},

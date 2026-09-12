@@ -1,4 +1,5 @@
 id: hello.create_marker
+environment_type: local
 environment:
   actions:
     - type: command

@@ -16,6 +16,7 @@ def _scripted_run(root: Path) -> tuple[Path, str]:
     task = TaskSpec(
         id="regrade.marker",
         instruction="create a marker",
+        environment_type="local",
         environment={"actions": [
             {"type": "command", "command": ["bash", "-lc", "printf READY > marker.txt"]},
             {"type": "finish"},
