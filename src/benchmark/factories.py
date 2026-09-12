@@ -33,7 +33,14 @@ def build_agent(task: TaskSpec) -> AgentAdapter:
         from .adapters.agents.cli import CLIAgent
         if not task.cli.get("command"):
             raise ValueError("cli.command is required for agent 'cli'")
-        return CLIAgent(task.instruction, **task.cli)
+        options = dict(task.cli)
+        # All of a CLI agent's launches happen inside one act(), so the trial
+        # deadline is only enforced by the process timeout. Never let the CLI
+        # outlive the trial budget.
+        configured_timeout = options.get("timeout")
+        options["timeout"] = (min(float(configured_timeout), task.limits.timeout_seconds)
+                              if configured_timeout is not None else task.limits.timeout_seconds)
+        return CLIAgent(task.instruction, **options)
     if task.agent == "multi_agent":
         from .adapters.agents.multi_agent import MultiAgentAdapter
         return MultiAgentAdapter.from_task(task)

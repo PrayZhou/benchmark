@@ -44,6 +44,11 @@ class CLIAgent:
     CLI with the previous run's output appended to the instruction, for tools
     that need more than one invocation.
 
+    The working directory defaults to the ``cwd`` carried on the observation —
+    the environment delivers its per-trial workspace there — so a task's files
+    are visible without plumbing the workspace through ``build_agent``. An
+    explicit ``cli.cwd`` wins over the observation.
+
     A broken CLI never crashes the harness: a missing binary, an unexpected exit
     code, and a timeout all become ``AgentResult(status="error")``.
     """
@@ -84,7 +89,9 @@ class CLIAgent:
         self.prompt_flag = prompt_flag
         self.timeout = timeout
         self.max_steps = max_steps
-        self.cwd = cwd
+        # An explicit cwd is stringified (a YAML int must not reach subprocess as
+        # a TypeError); when unset, ``act()`` uses the observation's cwd.
+        self.cwd = str(cwd) if cwd is not None else None
         # subprocess requires a ``str -> str`` environment; coerce here so a
         # YAML value can never turn a launch into a TypeError.
         self.env = {str(key): str(value) for key, value in env.items()} if env else None
@@ -96,12 +103,14 @@ class CLIAgent:
         self._started = time.monotonic()
 
     def act(self, observation: dict[str, Any]) -> dict[str, Any]:
-        del observation
+        # The environment reports the per-trial workspace here; an explicit
+        # ``cli.cwd`` overrides it. Read before any launch and never mutated.
+        cwd = self.cwd or _optional_str(observation.get("cwd"))
         while self._steps < self.max_steps:
             instruction = self.instruction
             if self._last_output:
                 instruction += PREVIOUS_OUTPUT_HEADER + self._last_output
-            status, error, output = self._launch(instruction)
+            status, error, output = self._launch(instruction, cwd)
             self._steps += 1
             self._last_output = output
             self._result = AgentResult(
@@ -113,19 +122,19 @@ class CLIAgent:
             )
         return {"type": "finish"}
 
-    def _launch(self, instruction: str) -> tuple[Literal["completed", "error"], str | None, str]:
+    def _launch(self, instruction: str, cwd: str | None) -> tuple[Literal["completed", "error"], str | None, str]:
         prompt_path: str | None = None
         try:
             args, stdin_text, prompt_path = self._prepare(instruction)
             env = self._merged_env()
             if stdin_text is None:
                 completed = subprocess.run(
-                    [self.command, *args], cwd=self.cwd, env=env, timeout=self.timeout,
+                    [self.command, *args], cwd=cwd, env=env, timeout=self.timeout,
                     capture_output=True, text=True, stdin=subprocess.DEVNULL, check=False,
                 )
             else:
                 completed = subprocess.run(
-                    [self.command, *args], cwd=self.cwd, env=env, timeout=self.timeout,
+                    [self.command, *args], cwd=cwd, env=env, timeout=self.timeout,
                     capture_output=True, text=True, input=stdin_text, check=False,
                 )
         except subprocess.TimeoutExpired as exc:
@@ -191,6 +200,13 @@ def _tail(text: str, limit: int) -> str:
     if limit <= 0:
         return ""
     return text[-limit:]
+
+
+def _optional_str(value: Any) -> str | None:
+    """Coerce an observation-supplied path to ``str`` without ever raising."""
+    if value is None:
+        return None
+    return str(value)
 
 
 def _text(value: Any) -> str:

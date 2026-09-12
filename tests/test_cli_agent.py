@@ -39,8 +39,8 @@ def _write_stub(tmp_path: Path, *, code: int = 0, body: str = STUB) -> str:
     return str(script)
 
 
-def _run(agent: CLIAgent) -> AgentResult:
-    assert agent.act({}) == {"type": "finish"}
+def _run(agent: CLIAgent, observation: dict | None = None) -> AgentResult:
+    assert agent.act(observation if observation is not None else {}) == {"type": "finish"}
     assert agent.finished()
     return agent.result()
 
@@ -290,6 +290,50 @@ def test_non_string_args_and_env_values_are_stringified(tmp_path: Path) -> None:
     assert _run(agent).status == "completed"
 
 
+_CWD_STUB = (
+    "#!/usr/bin/env python3\n"
+    "import json, os, sys\n"
+    "print(json.dumps({'cwd': os.getcwd()}))\n"
+    "sys.exit(0)\n"
+)
+
+
+def test_act_runs_in_the_observation_cwd(tmp_path: Path) -> None:
+    """The per-trial workspace arrives on every observation, not through the factory."""
+    script = _write_stub(tmp_path, body=_CWD_STUB)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    agent = CLIAgent("x", command=script, prompt_mode="stdin")
+
+    payload = _payload(_run(agent, {"cwd": str(workspace)}))
+
+    assert Path(payload["cwd"]).resolve() == workspace.resolve()
+
+
+def test_explicit_cwd_wins_over_the_observation(tmp_path: Path) -> None:
+    script = _write_stub(tmp_path, body=_CWD_STUB)
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    observed = tmp_path / "observed"
+    observed.mkdir()
+    agent = CLIAgent("x", command=script, prompt_mode="stdin", cwd=str(explicit))
+
+    payload = _payload(_run(agent, {"cwd": str(observed)}))
+
+    assert Path(payload["cwd"]).resolve() == explicit.resolve()
+
+
+def test_non_string_cwd_is_coerced_and_cannot_raise(tmp_path: Path) -> None:
+    script = _write_stub(tmp_path)
+
+    agent = CLIAgent("x", command=script, prompt_mode="stdin", cwd=123)
+    assert agent.cwd == "123"
+
+    # A non-string observation cwd is coerced too; a bogus path is an error result.
+    result = _run(CLIAgent("x", command=script, prompt_mode="stdin"), {"cwd": 123})
+    assert result.status == "error"
+
+
 # --- factory route ---------------------------------------------------------
 
 
@@ -317,3 +361,37 @@ def test_factory_reads_the_cli_instruction(tmp_path: Path) -> None:
 def test_factory_requires_a_command() -> None:
     with pytest.raises(ValueError, match="command"):
         build_agent(TaskSpec(id="t", instruction="x", agent="cli"))
+
+
+def test_factory_clamps_cli_timeout_to_the_trial_budget(tmp_path: Path) -> None:
+    """A CLI timeout longer than the trial must not outlive the trial."""
+    script = _write_stub(tmp_path)
+    task = TaskSpec(id="t", instruction="x", agent="cli", cli={"command": script, "timeout": 600},
+                    limits={"timeout_seconds": 120})
+
+    agent = build_agent(task)
+
+    assert isinstance(agent, CLIAgent)
+    assert agent.timeout == 120
+
+
+def test_factory_defaults_cli_timeout_to_the_trial_budget(tmp_path: Path) -> None:
+    script = _write_stub(tmp_path)
+    task = TaskSpec(id="t", instruction="x", agent="cli", cli={"command": script},
+                    limits={"timeout_seconds": 90})
+
+    agent = build_agent(task)
+
+    assert isinstance(agent, CLIAgent)
+    assert agent.timeout == 90
+
+
+def test_factory_keeps_a_tighter_cli_timeout(tmp_path: Path) -> None:
+    script = _write_stub(tmp_path)
+    task = TaskSpec(id="t", instruction="x", agent="cli", cli={"command": script, "timeout": 15},
+                    limits={"timeout_seconds": 120})
+
+    agent = build_agent(task)
+
+    assert isinstance(agent, CLIAgent)
+    assert agent.timeout == 15
