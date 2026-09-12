@@ -3,7 +3,11 @@ from __future__ import annotations
 import re
 
 from ...interfaces import Environment
-from ...schemas import GraderResult, TaskSpec, TraceEvent
+from ...schemas import Finding, GraderResult, TaskSpec, TraceEvent
+
+# Scores this close to the pass threshold are reported as uncertain: a small
+# environment difference could flip the verdict either way.
+NEAR_THRESHOLD_EPSILON = 0.02
 
 
 class CommandGrader:
@@ -44,23 +48,37 @@ class CommandGrader:
         except Exception as exc:
             return GraderResult(success=False, failure_category="verifier_error", evidence=[str(exc)])
         output = completed.stdout.strip() or completed.stderr.strip() or "verifier produced no output"
+        silent = not completed.stdout.strip() and not completed.stderr.strip()
+        uncertainties = (
+            [Finding(kind="verifier_no_output", severity="low", source="grader",
+                     evidence="verifier produced no stdout or stderr")]
+            if silent else []
+        )
         if self._score_regex is None:
             if completed.returncode == 0:
-                return GraderResult(success=True, score=1.0, evidence=[output])
-            return GraderResult(success=False, score=0.0, failure_category="test_failure", evidence=[output])
+                return GraderResult(success=True, score=1.0, evidence=[output], uncertainties=uncertainties)
+            return GraderResult(success=False, score=0.0, failure_category="test_failure",
+                                evidence=[output], uncertainties=uncertainties)
 
         score = self._parse_score(completed.stdout, completed.stderr)
         if score is None:
             return GraderResult(
                 success=False, score=0.0, failure_category="verifier_error",
                 evidence=[f"{output} (no score matched {self.score_pattern!r})"],
+                uncertainties=uncertainties,
             )
+        if abs(score - self.pass_threshold) < NEAR_THRESHOLD_EPSILON:
+            uncertainties = uncertainties + [Finding(
+                kind="near_threshold", severity="low", source="grader",
+                evidence=f"score {score:g} is within {NEAR_THRESHOLD_EPSILON:g} of threshold {self.pass_threshold:g}",
+            )]
         success = completed.returncode == 0 and score >= self.pass_threshold
         return GraderResult(
             success=success,
             score=score,
             failure_category=None if success else "test_failure",
             evidence=[f"{output} (score={score:g}, threshold={self.pass_threshold:g})"],
+            uncertainties=uncertainties,
         )
 
     def _parse_score(self, stdout: str, stderr: str) -> float | None:

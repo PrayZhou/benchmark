@@ -170,3 +170,26 @@ def test_composite_grader_no_disagreement_when_all_agree() -> None:
     task = TaskSpec(id="t", instruction="x")
     passing = FixedGrader(GraderResult(success=True, score=1.0))
     assert CompositeGrader([passing, passing]).evaluate(task, None, []).uncertainties == []
+
+
+def test_command_grader_flags_a_score_near_the_threshold(tmp_path: Path) -> None:
+    task = TaskSpec(id="t", instruction="x")
+    grader = CommandGrader(["bash", "-lc", "echo 'SCORE: 0.79'"], isolated=False,
+                           score_pattern=r"score:\s*([0-9.]+)", pass_threshold=0.8)
+    result = grader.evaluate(task, _environment(tmp_path), [])
+    assert [f.kind for f in result.uncertainties] == ["near_threshold"]
+    assert result.score == 0.79
+
+
+def test_command_grader_does_not_flag_a_clear_score(tmp_path: Path) -> None:
+    task = TaskSpec(id="t", instruction="x")
+    grader = CommandGrader(["bash", "-lc", "echo 'SCORE: 0.5'"], isolated=False,
+                           score_pattern=r"score:\s*([0-9.]+)", pass_threshold=0.8)
+    assert grader.evaluate(task, _environment(tmp_path), []).uncertainties == []
+
+
+def test_command_grader_flags_silent_verifier_output(tmp_path: Path) -> None:
+    task = TaskSpec(id="t", instruction="x")
+    result = CommandGrader(["bash", "-lc", "exit 0"], isolated=False).evaluate(task, _environment(tmp_path), [])
+    assert result.success is True
+    assert [f.kind for f in result.uncertainties] == ["verifier_no_output"]
