@@ -91,6 +91,19 @@ def build_grader(task: TaskSpec) -> Grader:
             fail_closed=bool(task.grader.get("fail_closed", True)),
             severity_threshold=task.grader.get("severity_threshold", "medium"),
         )
+    if task.grader_type == "judge":
+        from .adapters.graders.judge import JudgeGrader
+        return JudgeGrader(
+            model=task.grader.get("model", ""),
+            rubric=task.grader.get("rubric"),
+            provider=task.grader.get("provider", "openai-compatible"),
+            base_url=task.grader.get("base_url"),
+            api_key_env=task.grader.get("api_key_env", "OPENAI_API_KEY"),
+            timeout=float(task.grader.get("timeout", 60.0)),
+            max_output_tokens=int(task.grader.get("max_output_tokens", 1024)),
+            fail_closed=bool(task.grader.get("fail_closed", True)),
+            severity_threshold=task.grader.get("severity_threshold", "medium"),
+        )
     raise ValueError(f"unknown grader adapter: {task.grader_type}")
 
 
