@@ -39,9 +39,15 @@ def _write_stub(tmp_path: Path, *, code: int = 0, body: str = STUB) -> str:
     return str(script)
 
 
-def _run(agent: CLIAgent, observation: dict | None = None) -> AgentResult:
-    assert agent.act(observation if observation is not None else {}) == {"type": "finish"}
+def _act(agent: CLIAgent, observation: dict | None = None) -> dict:
+    action = agent.act(observation if observation is not None else {})
+    assert action["type"] == "finish"
     assert agent.finished()
+    return action
+
+
+def _run(agent: CLIAgent, observation: dict | None = None) -> AgentResult:
+    _act(agent, observation)
     return agent.result()
 
 
@@ -220,6 +226,59 @@ def test_final_message_combines_stdout_and_stderr(tmp_path: Path) -> None:
     assert result.final_message is not None
     assert "OUT" in result.final_message
     assert "ERR" in result.final_message
+
+
+def test_finish_action_carries_the_bounded_output_tail(tmp_path: Path) -> None:
+    """The runner traces every action payload, so the terminal action must carry
+    the output; ``final_message`` alone is not persisted and a real CLI run would
+    otherwise leave no transcript evidence."""
+    body = (
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stdout.write('HEAD' + 'x' * 200)\n"
+        "sys.stderr.write('TAIL-SENTINEL')\n"
+        "sys.exit(0)\n"
+    )
+    script = _write_stub(tmp_path, body=body)
+    agent = CLIAgent("x", command=script, prompt_mode="stdin", max_output_chars=40)
+
+    action = _act(agent)
+
+    assert action["final_message"] == agent.result().final_message
+    assert action["final_message"].endswith("TAIL-SENTINEL")
+    assert len(action["final_message"]) <= 40
+    assert "HEAD" not in action["final_message"]
+
+
+def test_cli_output_reaches_the_recorded_trace(tmp_path: Path) -> None:
+    """End-to-end: the runner persists action payloads, so a real CLI run must
+    leave its output tail in the trace JSONL, not only on AgentResult."""
+    from benchmark.adapters.environments.local import LocalEnvironment
+    from benchmark.factories import build_grader
+    from benchmark.runner import run_trial
+
+    body = (
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stdout.write('CLI-TRANSCRIPT-SENTINEL')\n"
+        "sys.exit(0)\n"
+    )
+    script = _write_stub(tmp_path, body=body)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = TaskSpec(id="t", instruction="x", agent="cli", environment_type="local",
+                    cli={"command": script, "prompt_mode": "stdin"},
+                    grader={"command": ["bash", "-lc", "true"]})
+
+    result = run_trial(task, LocalEnvironment(workspace), build_agent(task), build_grader(task),
+                       tmp_path / "traces", trial_id="cli-trace")
+
+    assert result.trace_path is not None
+    events = [json.loads(line) for line in Path(result.trace_path).read_text().splitlines()]
+    finish_actions = [event for event in events
+                      if event["type"] == "action" and event["payload"].get("type") == "finish"]
+    assert finish_actions, "no finish action recorded"
+    assert "CLI-TRANSCRIPT-SENTINEL" in finish_actions[-1]["payload"]["final_message"]
 
 
 def test_no_tokens_are_reported(tmp_path: Path) -> None:

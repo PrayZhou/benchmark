@@ -2,13 +2,26 @@
 # Verifier for makefile_target: force the recipe to run, then inspect the
 # regenerated artifact. End state only (exit code + report.txt), hardened so a
 # pre-fabricated artifact or an "up to date" target cannot pass.
+#
+# The verifier runs on a scratch copy of the workspace. Under Docker the
+# workspace is mounted read-only (:ro), so `rm`/`make` in place would fail with
+# EROFS even for a correct solution; all mutation happens in the copy instead.
 set -euo pipefail
 
 test -f Makefile
 
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+cp -a . "$scratch/"
+# ``cp -a`` can copy the workspace directory's own mode onto the scratch dir,
+# so a read-only-looking workspace would leave the copy unwritable too. Force
+# the copy (the only place this script mutates) to be writable by us.
+chmod -R u+rwX "$scratch"
+cd "$scratch"
+
 # Remove any pre-built output and force the recipe to run, so a passing run
-# proves the Makefile itself produced report.txt. The path is relative to the
-# trial workspace, which is the verifier's cwd.
+# proves the Makefile itself produced report.txt (and not a pre-created file or
+# an "up to date" no-op).
 rm -f report.txt
 make -B report
 test -f report.txt

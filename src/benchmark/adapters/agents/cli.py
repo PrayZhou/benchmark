@@ -123,7 +123,11 @@ class CLIAgent:
                 steps=self._steps,
                 duration_seconds=time.monotonic() - self._started,
             )
-        return {"type": "finish"}
+        # Carry the bounded output on the terminal action as well as the
+        # AgentResult. The runner records every action's payload in the trace,
+        # so this is what leaves transcript evidence for a real CLI run;
+        # final_message alone is not persisted.
+        return {"type": "finish", "final_message": self._last_output or ""}
 
     def _launch(self, instruction: str, cwd: str | None) -> tuple[Literal["completed", "error"], str | None, str]:
         prompt_path: str | None = None

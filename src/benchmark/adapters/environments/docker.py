@@ -182,9 +182,13 @@ class DockerEnvironment:
                 raise subprocess.CalledProcessError(completed.returncode, [binary, *args],
                                                      output=completed.stdout, stderr=completed.stderr)
             return completed
-        except FileNotFoundError as exc:
+        except OSError as exc:
+            # A missing binary, a non-executable file, and a directory all raise
+            # an OSError subclass here; wrap them in one actionable RuntimeError
+            # so ``preflight`` can report it instead of a raw OS error leaking.
             raise RuntimeError(
-                f"Docker CLI not found at {binary!r}; set BENCHMARK_DOCKER_BIN or pass docker_binary"
+                f"Docker CLI could not be launched from {binary!r} ({type(exc).__name__}); "
+                f"set BENCHMARK_DOCKER_BIN or pass docker_binary"
             ) from exc
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError(f"Docker command timed out after {timeout}s") from exc

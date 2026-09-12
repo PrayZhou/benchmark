@@ -1,7 +1,7 @@
 # Task definitions live in tasks/<name>/ directories.
 # instruction.md owns the instruction; tests/test.sh owns the verifier.
-# The example is an offline smoke run: opt into the local (non-Docker)
-# environment here and in tasks/hello_task/task.yaml.
-environment_type: local
+# This is an offline smoke run: opt into the local (non-Docker) environment in
+# tasks/hello_task/task.yaml, which is the effective per-task opt-in. A run
+# config does not carry a top-level environment default.
 task_dirs:
   - ../tasks/hello_task

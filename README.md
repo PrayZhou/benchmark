@@ -56,7 +56,7 @@ reports/example/traces/<trial-id>.jsonl
 reports/example/artifacts/<task-id>/<run>/<attempt>/index.json
 ```
 
-**环境默认值：Docker。** `TaskSpec.environment_type` 默认为 `"docker"`，真实任务默认跑在容器里，`local` 必须显式 opt-in。上面的 smoke run 之所以无需 Docker 即可完成，是因为 `configs/example.yaml` 与 `tasks/hello_task/task.yaml` 都显式写了 `environment_type: local`（随附的 4 个任务同样如此）。`tasks/hello_task/Dockerfile` 是一个 docker 环境基线，仅在任务选用 `environment_type: docker` 并配置 `environment.image`（预构建镜像名）时才相关；它由任务记录在 `metadata.dockerfile`，harness 不会自动 build。
+**环境默认值：Docker。** `TaskSpec.environment_type` 默认为 `"docker"`，真实任务默认跑在容器里，`local` 必须显式 opt-in。上面的 smoke run 之所以无需 Docker 即可完成，是因为 `tasks/hello_task/task.yaml` 显式写了 `environment_type: local`（随附的 4 个任务同样如此）；run config 本身不设环境默认值，命令行可用 `--environment` 覆盖。`tasks/hello_task/Dockerfile` 是一个 docker 环境基线，仅在任务选用 `environment_type: docker` 并配置 `environment.image`（预构建镜像名）时才相关；它由任务记录在 `metadata.dockerfile`，harness 不会自动 build。
 
 ## 任务目录
 
@@ -143,6 +143,7 @@ TaskSpec → Runner → AgentAdapter ↔ EnvironmentAdapter → Independent Grad
 
 - **Docker 集成测试会在没有 daemon 或基础镜像时 SKIP。** `tests/test_docker_environment.py` 的集成用例在 `resolve_docker_binary` 找不到可用 daemon 时跳过；镜像不可得时同样跳过（默认 `python:3.12-slim`，可用 `BENCHMARK_TEST_IMAGE` 覆盖）。首次真实运行需要一次镜像拉取，而本内网主机没有缓存镜像、拉取被阻断，因此在把 `BENCHMARK_TEST_IMAGE` 指向本地/内网镜像之前，真实容器路径不会被实际执行。安全相关参数的单元测试通过注入 fake docker runner 完成，不需要 daemon。
 - **`agent: cli` 要求 `environment_type: local`。** CLI 适配器在宿主机上直接启动进程；容器环境报告的是容器内路径（如 `/workspace`），宿主上并不存在。`build_agent` 在构建期拒绝 `agent: cli` 与非 `local` 的组合，容器内委托执行尚未实现。
+- **`agent: cli` 绕过 `LocalEnvironment` 的凭证白名单。** `CLIAgent` 用 `{**os.environ, **self.env}` 启动 CLI，因此保护 agent 派生任务命令的 env allowlist 不适用于这条路径：CLI（以及它派生的任何进程）能看到宿主上的全部环境变量，包括 `OPENAI_API_KEY` / `COMATE_API_KEY`。这是「在宿主机上运行真实编码 CLI」的固有代价，唯一真正的缓解手段是容器/沙箱或凭证代理；本限制只在选用 `agent: cli` 时成立。
 - **`claude` / `codex` profiles 未经真实 CLI 验证。** 开发主机未安装任何编码 CLI，网络出口也被阻断，`profiles.py` 中的预设只编码了文档记载的非交互式调用方式，尚未对真实命令行运行过；使用前请按本机安装的 CLI 版本确认。
 - **`LocalEnvironment` 仍然不是安全沙箱。** 把它降级为显式 opt-in 只是减少误用，并不等于安全。staging 会把 `tasks/<name>/workspace/` 拷进 trial 工作区；符号链接不会被跟随（也不会被复制），因此 fixture 无法越过自己的目录树。
 - **`makefile_target` 的 verifier 按文本检查 recipe 声明的输入。** 它在 Makefile 的 tab 缩进行里要求出现 `$(INPUT)` 或字面量 `input.txt`；因此惯用的 `sort $< > $(OUTPUT)` 会被拒绝，必须写成 instruction 中给出的 `$(INPUT)` / `input.txt` 形式。

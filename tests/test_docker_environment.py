@@ -64,6 +64,18 @@ def test_reset_reports_a_missing_daemon_actionably(tmp_path: Path, monkeypatch) 
         environment.reset(TaskSpec(id="t", instruction="x"))
 
 
+def test_preflight_wraps_a_non_executable_binary_actionably(tmp_path: Path) -> None:
+    # A resolved-but-non-executable path raises PermissionError (an OSError), not
+    # FileNotFoundError. It must surface as preflight's actionable RuntimeError
+    # rather than leak a raw OS error to the caller.
+    binary = tmp_path / "docker-not-executable"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")  # deliberately no execute bit
+    environment = DockerEnvironment(tmp_path, image="alpine:3", docker_binary=str(binary))
+
+    with pytest.raises(RuntimeError, match="Docker preflight failed"):
+        environment.preflight()
+
+
 def _daemon_available() -> bool:
     binary = resolve_docker_binary()
     if not binary:
@@ -110,7 +122,7 @@ def _image_available(image: str) -> bool:
                            capture_output=True, timeout=30, check=False).returncode == 0:
             return True
         pulled = _subprocess.run([binary, "pull", image], capture_output=True,
-                                 timeout=300, check=False, env=_pull_env(binary))
+                                 timeout=60, check=False, env=_pull_env(binary))
     except (OSError, _subprocess.SubprocessError):
         return False
     return pulled.returncode == 0
@@ -122,10 +134,12 @@ def test_image_available_treats_a_hung_pull_as_unavailable(monkeypatch) -> None:
     # skips), never as an exception that reddens the suite. No container starts.
     monkeypatch.setattr(sys.modules[__name__], "resolve_docker_binary", lambda *a, **k: "/usr/bin/docker")
     calls: list[list[str]] = []
+    pull_timeouts: list[float | None] = []
 
     def fake_run(args, **kwargs):
         calls.append(list(args))
         if "pull" in args:
+            pull_timeouts.append(kwargs.get("timeout"))
             raise _subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout", 0))
         return _subprocess.CompletedProcess(args, 1)
 
@@ -137,6 +151,9 @@ def test_image_available_treats_a_hung_pull_as_unavailable(monkeypatch) -> None:
         _image_available.cache_clear()
     assert calls[0][1:3] == ["image", "inspect"]
     assert calls[1][1] == "pull"
+    # A firewall that silently drops packets must not stall the suite for
+    # minutes: the pull timeout is bounded well below the old 300s.
+    assert pull_timeouts and pull_timeouts[0] is not None and pull_timeouts[0] <= 60
 
 
 @integration
