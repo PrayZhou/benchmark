@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from ...interfaces import Environment, Grader
-from ...schemas import GraderResult, TaskSpec, TraceEvent
+from ...schemas import Finding, GraderResult, TaskSpec, TraceEvent
+from .findings import dedupe_findings
 
 
 class CompositeGrader:
@@ -38,14 +39,27 @@ class CompositeGrader:
             success = score >= self.threshold
         failure_category = None
         if not success:
-            failure_category = failures[0].failure_category if failures else "below_threshold"
+            categories = [result.failure_category for result in failures if result.failure_category]
+            if "policy_violation" in categories:
+                failure_category = "policy_violation"
+            elif categories:
+                failure_category = categories[0]
+            else:
+                failure_category = "below_threshold"
+        violations = dedupe_findings([item for result in results for item in result.violations])
+        uncertainties = dedupe_findings([item for result in results for item in result.uncertainties])
+        if len({result.success for result in results}) > 1:
+            uncertainties = dedupe_findings(uncertainties + [Finding(
+                kind="grader_disagreement", severity="low", source="grader",
+                evidence=f"sub-graders disagree on success: {[result.success for result in results]}",
+            )])
         return GraderResult(
             success=success,
             score=score,
             evidence=[item for result in results for item in result.evidence],
             failure_category=failure_category,
-            violations=[item for result in results for item in result.violations],
-            uncertainties=[item for result in results for item in result.uncertainties],
+            violations=violations,
+            uncertainties=uncertainties,
         )
 
     def _score(self, results: list[GraderResult]) -> float:

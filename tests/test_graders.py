@@ -142,3 +142,31 @@ def test_factory_reads_command_timeout_and_env_options(tmp_path: Path) -> None:
     assert built.command_timeout == 0.5
     assert built.env_allowlist == ("PATH", "TASK_TOKEN")
     assert built.env == {"TASK_TOKEN": "visible"}
+
+
+def test_composite_grader_dedupes_and_prefers_policy_violation() -> None:
+    from benchmark.schemas import Finding
+
+    duplicated = Finding(kind="destructive_command", severity="high", source="policy", evidence="rm -rf /")
+    policy = FixedGrader(GraderResult(success=False, score=0.0, failure_category="policy_violation",
+                                      violations=[duplicated]))
+    other = FixedGrader(GraderResult(success=False, score=0.0, failure_category="test_failure",
+                                     violations=[duplicated]))
+    result = CompositeGrader([policy, other]).evaluate(TaskSpec(id="t", instruction="x"), None, [])
+    assert result.success is False
+    assert result.failure_category == "policy_violation"
+    assert len(result.violations) == 1
+
+
+def test_composite_grader_reports_sub_grader_disagreement() -> None:
+    task = TaskSpec(id="t", instruction="x")
+    passing = FixedGrader(GraderResult(success=True, score=1.0))
+    failing = FixedGrader(GraderResult(success=False, score=0.5, failure_category="test_failure"))
+    result = CompositeGrader([passing, failing]).evaluate(task, None, [])
+    assert [f.kind for f in result.uncertainties] == ["grader_disagreement"]
+
+
+def test_composite_grader_no_disagreement_when_all_agree() -> None:
+    task = TaskSpec(id="t", instruction="x")
+    passing = FixedGrader(GraderResult(success=True, score=1.0))
+    assert CompositeGrader([passing, passing]).evaluate(task, None, []).uncertainties == []
