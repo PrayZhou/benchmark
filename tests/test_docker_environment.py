@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil as _shutil
 import subprocess as _subprocess
+import sys
 from functools import cache
 from pathlib import Path
 
@@ -97,17 +98,45 @@ def _pull_env(binary: str) -> dict[str, str]:
 def _image_available(image: str) -> bool:
     """Inspect the base image, pulling it at most once per session.
 
-    A missing image and a failed pull are both reported as unavailable so the
-    caller can skip rather than fail when the host is offline.
+    A missing image, a failed pull, and a pull that hangs until its timeout
+    are all reported as unavailable so the caller can skip rather than fail
+    when the host is offline.
     """
     binary = resolve_docker_binary()
     if not binary:
         return False
-    if _subprocess.run([binary, "image", "inspect", image],
-                       capture_output=True, timeout=30, check=False).returncode == 0:
-        return True
-    return _subprocess.run([binary, "pull", image], capture_output=True,
-                           timeout=300, check=False, env=_pull_env(binary)).returncode == 0
+    try:
+        if _subprocess.run([binary, "image", "inspect", image],
+                           capture_output=True, timeout=30, check=False).returncode == 0:
+            return True
+        pulled = _subprocess.run([binary, "pull", image], capture_output=True,
+                                 timeout=300, check=False, env=_pull_env(binary))
+    except (OSError, _subprocess.SubprocessError):
+        return False
+    return pulled.returncode == 0
+
+
+def test_image_available_treats_a_hung_pull_as_unavailable(monkeypatch) -> None:
+    # A firewall that drops packets makes ``docker pull`` hit its timeout
+    # instead of failing fast. That must read as "unavailable" (so the caller
+    # skips), never as an exception that reddens the suite. No container starts.
+    monkeypatch.setattr(sys.modules[__name__], "resolve_docker_binary", lambda *a, **k: "/usr/bin/docker")
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        if "pull" in args:
+            raise _subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout", 0))
+        return _subprocess.CompletedProcess(args, 1)
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    _image_available.cache_clear()
+    try:
+        assert _image_available("python:3.12-slim") is False
+    finally:
+        _image_available.cache_clear()
+    assert calls[0][1:3] == ["image", "inspect"]
+    assert calls[1][1] == "pull"
 
 
 @integration
