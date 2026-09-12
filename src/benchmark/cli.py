@@ -100,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--no-tasks", action="store_true", help="omit the per-task matrix")
     compare.add_argument("--dataset", help="only compare runs with this dataset label")
     compare.add_argument("--violations", action="store_true",
-                         help="only compare runs whose trials recorded a violation")
+                         help="only compare runs where any attempt recorded a violation")
 
     return parser
 

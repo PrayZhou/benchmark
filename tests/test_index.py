@@ -259,10 +259,37 @@ def test_reindexing_keeps_violation_counts_idempotent(tmp_path: Path) -> None:
     assert total == 1
 
 
-def _make_v1_database(path: Path) -> None:
+def test_retry_does_not_launder_a_violation(tmp_path: Path) -> None:
+    """Attempt 1 violated; attempt 2 passed cleanly. The run still has a violation."""
+    run_dir = _make_run(tmp_path / "run1", "run-1", [
+        _trial("t1", attempt=1, parent="g1", success=False, score=0.0,
+               violations=[_finding("edited_tests")], uncertainties=[_finding("judge_unsure", severity="low")]),
+        _trial("t2", attempt=2, parent="g1", success=True),
+    ])
+    index = RunIndex(tmp_path / "index.sqlite3")
+    index.index_run(run_dir)
+
+    runs = index.list_runs()
+    assert runs[0]["violation_count"] >= 1
+    assert runs[0]["uncertain_trials"] >= 1
+    with sqlite3.connect(tmp_path / "index.sqlite3") as connection:
+        total = connection.execute(
+            "SELECT SUM(violation_count), SUM(CASE WHEN uncertainties != '[]' THEN 1 ELSE 0 END) "
+            "FROM trials WHERE run_id = 'run-1'"
+        ).fetchone()
+    assert runs[0]["violation_count"] == total[0]
+    assert runs[0]["uncertain_trials"] == total[1]
+
+    payload = index.compare(violations_only=True)
+    assert [run["run_id"] for run in payload["runs"]] == ["run-1"]
+    # The outcome metrics keep decided-attempt semantics: the clean attempt 2 wins.
+    assert payload["runs"][0]["successful"] == 1
+
+
+def _make_v1_database(path: Path, user_version: int = 1) -> None:
     with sqlite3.connect(path) as connection:
         connection.executescript(_V1_SCHEMA)
-        connection.execute("PRAGMA user_version = 1")
+        connection.execute(f"PRAGMA user_version = {user_version}")
 
 
 def test_open_sets_schema_version_to_2(tmp_path: Path) -> None:
@@ -272,9 +299,12 @@ def test_open_sets_schema_version_to_2(tmp_path: Path) -> None:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
-def test_opening_a_v1_database_migrates_and_indexes(tmp_path: Path) -> None:
+@pytest.mark.parametrize("user_version", [0, 1])
+def test_opening_a_legacy_database_migrates_and_indexes(tmp_path: Path, user_version: int) -> None:
+    # Version 1 is what the migration writes; version 0 is what the original
+    # schema shipped, since it never wrote PRAGMA user_version at all.
     db = tmp_path / "index.sqlite3"
-    _make_v1_database(db)
+    _make_v1_database(db, user_version)
     run_dir = _make_run(tmp_path / "run1", "run-1", [_trial("t1", violations=[_finding()])])
 
     index = RunIndex(db)

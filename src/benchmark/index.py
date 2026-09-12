@@ -190,8 +190,15 @@ class RunIndex:
             "config": json.dumps(run_config),
             "manifest_path": str(manifest_path),
             "report_path": str(report_path) if report_path.exists() else None,
-            "violation_count": sum(summary.violations_by_kind.values()),
-            "uncertain_trials": summary.uncertain_trials,
+            # Violation/uncertainty counts are deliberately any-attempt: a
+            # violation is a recorded behavior, not an outcome a retry can
+            # undo, so a clean retry must not launder it away. The outcome
+            # metrics above (success_rate, average_score,
+            # failures_by_category) keep their decided-attempt semantics so
+            # retries do not dilute them. This also keeps the invariant
+            # runs.violation_count == SUM(trials.violation_count).
+            "violation_count": sum(len(result.violations) for result in trials),
+            "uncertain_trials": sum(1 for result in trials if result.uncertainties),
         }
         trial_rows = [self._trial_row(result, run_id) for result in trials]
         with closing(self._connect()) as connection, connection:
@@ -227,7 +234,8 @@ class RunIndex:
 
         ``dataset`` filters to runs carrying that label when no explicit
         ``run_ids`` are given. ``violations_only`` restricts the selection to
-        runs whose trials recorded at least one violation.
+        runs that recorded at least one violation in *any* attempt (a retry
+        cannot erase a recorded behavior).
         """
         with closing(self._connect()) as connection:
             runs = self._select_runs(connection, run_ids, dataset=dataset, violations_only=violations_only)
