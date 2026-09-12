@@ -9,12 +9,13 @@ import yaml
 
 from .index import DEFAULT_INDEX_PATH, RunIndex
 from .logging_config import configure_logging
+from .oracle import run_oracles, write_oracles
 from .orchestrator import run_tasks
 from .replay import write_replay
 from .schemas import ProviderConfig, RunConfig, TaskSpec
 from .tasks import discover_tasks, load_task_dir
 
-COMMANDS = {"run", "replay", "regrade", "index", "compare"}
+COMMANDS = {"run", "replay", "regrade", "index", "compare", "oracle"}
 # Options the top-level parser owns; seeing one first must not trigger the
 # backward-compatible "implicit run" rewrite.
 GLOBAL_FLAGS = {"-h", "--help", "--log-level", "--log-json"}
@@ -102,6 +103,13 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--violations", action="store_true",
                          help="only compare runs where any attempt recorded a violation")
 
+    oracle = sub.add_parser("oracle", parents=[common],
+                            help="run each task's oracle.sh and check its own verifier")
+    oracle.add_argument("--tasks-root", type=Path, help="load every task directory under this root")
+    oracle.add_argument("--task-dir", action="append", type=Path, default=[],
+                        help="load a tasks/<name>/ directory (repeatable)")
+    oracle.add_argument("--output", type=Path, default=Path("reports/oracles"))
+
     return parser
 
 
@@ -131,6 +139,23 @@ def main() -> None:
         payload = RunIndex(args.db).compare(args.run_ids or None, include_tasks=not args.no_tasks,
                                             dataset=args.dataset, violations_only=args.violations)
         print(json.dumps(payload, indent=2, default=str))
+        return
+    if args.command == "oracle":
+        oracle_tasks: list[TaskSpec] = []
+        if args.tasks_root:
+            oracle_tasks.extend(discover_tasks(args.tasks_root))
+        for directory in args.task_dir:
+            oracle_tasks.append(load_task_dir(directory))
+        if not oracle_tasks:
+            parser.error("no tasks resolved: pass --tasks-root or --task-dir")
+        oracle_results = run_oracles(oracle_tasks, args.output)
+        write_oracles(oracle_results, args.output)
+        print(json.dumps(oracle_results, indent=2, default=str))
+        # Gate CI: a task whose reference solution misses its own verifier is a
+        # mis-specified or unsolvable task. A task without an oracle is a skip,
+        # not a failure (``verifier_passed is None``).
+        if any(entry["verifier_passed"] is False for entry in oracle_results):
+            sys.exit(1)
         return
     if args.command is None:
         parser.error("use `benchmark run CONFIG` (or `benchmark replay RUN_DIR TRIAL_ID`)")
