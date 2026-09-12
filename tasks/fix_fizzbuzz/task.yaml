@@ -1,0 +1,6 @@
+id: bugs.fix_fizzbuzz
+environment_type: local
+seed: 101
+limits:
+  max_steps: 12
+  timeout_seconds: 60

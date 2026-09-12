@@ -1,0 +1,12 @@
+2026-01-01T00:00:01Z INFO  service started
+2026-01-01T00:00:02Z INFO  request accepted id=1
+2026-01-01T00:00:03Z WARN  cache miss key=a
+2026-01-01T00:00:04Z ERROR request failed id=2
+2026-01-01T00:00:05Z INFO  request accepted id=3
+2026-01-01T00:00:06Z DEBUG flushed 12 bytes
+2026-01-01T00:00:07Z ERROR request failed id=4
+2026-01-01T00:00:08Z INFO  request accepted id=5
+2026-01-01T00:00:09Z WARN  slow query 812ms
+2026-01-01T00:00:10Z DEBUG cache populated key=b
+2026-01-01T00:00:11Z INFO  health check ok
+2026-01-01T00:00:12Z ERROR request failed id=6

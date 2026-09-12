@@ -52,6 +52,24 @@ def test_oracle_that_misses_the_artifact_fails_the_verifier(tmp_path: Path) -> N
     assert entry["verifier_passed"] is False
 
 
+def test_oracle_path_is_resolved_against_the_load_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A relative tasks root must still locate its oracle once cwd changes.
+
+    ``--tasks-root tasks`` records a relative ``task_dir``. The oracle runs with
+    the trial workspace as cwd, so the script path has to be made absolute at
+    lookup time or ``bash`` cannot find it.
+    """
+    make_task_dir(tmp_path, "passes", oracle="printf ok > artifact.txt")
+    monkeypatch.chdir(tmp_path)
+    task = load_task_dir(Path("passes"))
+    assert task.metadata["task_dir"] == "passes"
+
+    [entry] = run_oracles([task], tmp_path / "work")
+
+    assert entry["verifier_passed"] is True
+    assert Path(entry["oracle"]).is_absolute()
+
+
 def test_task_without_an_oracle_is_skipped_not_an_error(tmp_path: Path) -> None:
     directory = make_task_dir(tmp_path, "no_oracle", oracle=None)
     task = load_task_dir(directory)

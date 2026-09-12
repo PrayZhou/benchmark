@@ -1,0 +1,6 @@
+id: data.parse_log_counts
+environment_type: local
+seed: 202
+limits:
+  max_steps: 12
+  timeout_seconds: 60

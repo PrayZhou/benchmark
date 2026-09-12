@@ -1,0 +1,4 @@
+# The shipped task suite. `tasks_root` points at every tasks/<name>/ directory,
+# so adding a task directory is enough for it to be discovered. Run it with:
+#   uv run python -m benchmark run configs/tasks.yaml
+tasks_root: ../tasks

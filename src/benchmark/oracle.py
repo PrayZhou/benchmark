@@ -22,11 +22,16 @@ ORACLE_FILE = "oracle.sh"
 
 
 def _oracle_path(task: TaskSpec) -> Path | None:
-    """Locate ``oracle.sh`` through the task directory recorded at load time."""
+    """Locate ``oracle.sh`` through the task directory recorded at load time.
+
+    The script is executed with the task workspace as cwd, so the located path
+    must be absolute: a relative ``task_dir`` (as recorded when the tasks root
+    itself was relative) would otherwise resolve against the wrong directory.
+    """
     task_dir = task.metadata.get("task_dir")
     if not task_dir:
         return None
-    candidate = Path(str(task_dir)) / ORACLE_FILE
+    candidate = (Path(str(task_dir)) / ORACLE_FILE).resolve()
     return candidate if candidate.is_file() else None
 
 
