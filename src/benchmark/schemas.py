@@ -62,6 +62,7 @@ class TaskSpec(BaseModel):
     limits: Limits = Field(default_factory=lambda: Limits())
     seed: int = 0
     agent: str = "scripted"
+    cli: dict[str, Any] = Field(default_factory=dict)
     environment_type: str = "docker"
     grader_type: str = "command"
     provider: ProviderConfig = Field(default_factory=ProviderConfig)

@@ -29,6 +29,11 @@ def build_agent(task: TaskSpec) -> AgentAdapter:
     if task.agent == "mcp":
         from .adapters.agents.mcp import MCPAgent
         return MCPAgent()  # honest scaffold; raises its clear refusal
+    if task.agent == "cli":
+        from .adapters.agents.cli import CLIAgent
+        if not task.cli.get("command"):
+            raise ValueError("cli.command is required for agent 'cli'")
+        return CLIAgent(task.instruction, **task.cli)
     if task.agent == "multi_agent":
         from .adapters.agents.multi_agent import MultiAgentAdapter
         return MultiAgentAdapter.from_task(task)
