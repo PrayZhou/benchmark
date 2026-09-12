@@ -152,10 +152,26 @@ def test_composite_grader_dedupes_and_prefers_policy_violation() -> None:
                                       violations=[duplicated]))
     other = FixedGrader(GraderResult(success=False, score=0.0, failure_category="test_failure",
                                      violations=[duplicated]))
-    result = CompositeGrader([policy, other]).evaluate(TaskSpec(id="t", instruction="x"), None, [])
+    # Policy is *second*: without the explicit preference the aggregate would
+    # take the first failure category (``test_failure``).
+    result = CompositeGrader([other, policy]).evaluate(TaskSpec(id="t", instruction="x"), None, [])
     assert result.success is False
     assert result.failure_category == "policy_violation"
     assert len(result.violations) == 1
+
+
+def test_dedupe_findings_preserves_order_and_distinguishes_by_step() -> None:
+    from benchmark.adapters.graders.findings import dedupe_findings
+    from benchmark.schemas import Finding
+
+    first = Finding(kind="destructive_command", evidence="rm -rf /", step=1)
+    second = Finding(kind="destructive_command", evidence="rm -rf /", step=2)
+    duplicate_of_first = Finding(kind="destructive_command", evidence="rm -rf /", step=1)
+    different_kind = Finding(kind="evaluation_dos", evidence="rm -rf /", step=1)
+
+    unique = dedupe_findings([first, second, duplicate_of_first, different_kind])
+    # Order is first-seen; ``step`` distinguishes otherwise-identical findings.
+    assert unique == [first, second, different_kind]
 
 
 def test_composite_grader_reports_sub_grader_disagreement() -> None:

@@ -11,6 +11,39 @@ from benchmark.runner import run_trial
 from benchmark.schemas import TaskSpec
 
 
+class _NoExecuteEnvironment:
+    """Records actions without running them: a violating argv is data, not a process."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root / "workspace"
+        self.root.mkdir(exist_ok=True)
+        self.executed: list[dict] = []
+        self._done = False
+
+    def reset(self, task_: TaskSpec) -> None:
+        del task_
+        self._done = False
+
+    def observe(self) -> dict:
+        return {"cwd": str(self.root)}
+
+    def execute(self, action: dict, *, timeout: float | None = None) -> dict:
+        del timeout
+        self.executed.append(action)
+        if action.get("type") == "finish":
+            self._done = True
+        return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
+
+    def terminal(self) -> bool:
+        return self._done
+
+    def artifacts(self) -> list[str]:
+        return []
+
+    def cleanup(self) -> None:
+        pass
+
+
 def test_scripted_trial_succeeds(tmp_path: Path) -> None:
     task = TaskSpec(
         id="test.marker",
@@ -416,6 +449,48 @@ def test_policy_violation_fails_closed_and_is_not_retried(tmp_path: Path) -> Non
     assert results[0].success is False
     assert results[0].failure_category == "policy_violation"
     assert [f.kind for f in results[0].violations] == ["destructive_command"]
+
+
+def test_policy_violation_outranks_agent_error(tmp_path: Path) -> None:
+    """A violating trial that then errors must stay ``policy_violation``, not retry as ``error``."""
+    from benchmark.adapters.graders.policy import PolicyGrader
+    from benchmark.schemas import AgentResult
+
+    class ViolatingErroringAgent:
+        agent_id = "violating-erroring"
+
+        def __init__(self) -> None:
+            self._result: AgentResult | None = None
+            self._step = 0
+
+        def act(self, observation: dict) -> dict:
+            del observation
+            self._step += 1
+            if self._step == 1:
+                # Inert argv: inspected as data by PolicyGrader, never executed.
+                return {"type": "command", "command": ["rm", "-rf", "/"]}
+            self._result = AgentResult(status="error", error="gateway 404")
+            return {"type": "finish"}
+
+        def finished(self) -> bool:
+            return self._result is not None
+
+        def result(self) -> AgentResult:
+            return self._result
+
+    task = TaskSpec(id="test.policy-error", instruction="x", grader={"command": ["bash", "-lc", "true"]})
+    result = run_trial(
+        task,
+        _NoExecuteEnvironment(tmp_path),
+        ViolatingErroringAgent(),
+        PolicyGrader(None, fail_closed=True),
+        tmp_path / "traces",
+        trial_id="trial-policy-error",
+    )
+    assert result.status == "error"
+    assert result.success is False
+    assert result.failure_category == "policy_violation"
+    assert [f.kind for f in result.violations] == ["destructive_command"]
 
 
 def test_summary_aggregates_violations_and_uncertain_trials() -> None:

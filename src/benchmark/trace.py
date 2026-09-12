@@ -14,11 +14,16 @@ logger = logging.getLogger(__name__)
 # cap keeps the on-disk trajectory bounded too.
 DEFAULT_MAX_PAYLOAD_CHARS = 20_000
 
+# Appended by ``truncate_text`` when a string is cut. Replay skips byte-for-byte
+# stdout comparison when it is present, and ``PolicyGrader`` reports a
+# ``truncated_evidence`` uncertainty for tool results that carry it.
+TRUNCATION_MARKER = "...[truncated "
+
 
 def truncate_text(value: str, limit: int) -> str:
     if limit <= 0 or len(value) <= limit:
         return value
-    return f"{value[:limit]}\n...[truncated {len(value) - limit} chars]"
+    return f"{value[:limit]}\n{TRUNCATION_MARKER}{len(value) - limit} chars]"
 
 
 def truncate_payload(value: Any, limit: int) -> Any:

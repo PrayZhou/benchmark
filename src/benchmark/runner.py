@@ -73,7 +73,12 @@ def run_trial(
         # When the agent itself errored or ran out of time, that is the root
         # cause: the grader only observed an untouched workspace. Reporting its
         # ``test_failure`` would hide the agent failure and suppress retries.
-        if grader_result.success:
+        # A policy violation outranks even that: it is never retryable, so it
+        # must stay visible regardless of how the agent ended.
+        failure_category: str | None
+        if grader_result.failure_category == "policy_violation":
+            failure_category = "policy_violation"
+        elif grader_result.success:
             failure_category = grader_result.failure_category
         elif agent_result.status in {"error", "timeout"}:
             failure_category = agent_result.status

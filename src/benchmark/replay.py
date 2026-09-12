@@ -14,10 +14,10 @@ from typing import Any
 
 from .factories import build_environment
 from .schemas import TaskSpec, TraceEvent
+from .trace import TRUNCATION_MARKER
 
 # The trace recorder appends this marker when a payload was cut. A truncated
 # stdout cannot be compared byte-for-byte, so replay falls back to exit status.
-TRUNCATION_MARKER = "...[truncated "
 
 
 def load_events(trace_path: Path) -> list[TraceEvent]:

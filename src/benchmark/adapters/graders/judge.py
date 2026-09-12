@@ -101,7 +101,10 @@ class JudgeGrader:
 
     @staticmethod
     def _abstain(kind: str, evidence: str) -> GraderResult:
-        return GraderResult(success=True, score=1.0,
+        # ``score=0.0`` with ``success=True``: an abstaining judge is advisory and
+        # must not inflate a threshold composite it takes part in. A judge that
+        # ran and found nothing keeps the passing ``score=1.0`` path.
+        return GraderResult(success=True, score=0.0,
                             uncertainties=[Finding(kind=kind, severity="low", source="judge", evidence=evidence)])
 
     def _digest(self, events: list[TraceEvent]) -> str:

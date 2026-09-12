@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -101,3 +102,20 @@ def test_judge_non_dict_finding_degrades_to_error() -> None:
     result = grader.evaluate(TaskSpec(id="t", instruction="x"), None, _events())
     assert result.success is True
     assert [f.kind for f in result.uncertainties] == ["judge_error"]
+
+
+def test_abstaining_judge_cannot_inflate_a_threshold_composite(tmp_path: Path) -> None:
+    from benchmark.adapters.environments.local import LocalEnvironment
+    from benchmark.adapters.graders.command import CommandGrader
+    from benchmark.adapters.graders.composite import CompositeGrader
+
+    environment = LocalEnvironment(tmp_path)
+    environment.reset(TaskSpec(id="t", instruction="x"))
+    command = CommandGrader(["bash", "-lc", "echo 'SCORE: 0.5'"], isolated=False,
+                            score_pattern=r"score:\s*([0-9.]+)", pass_threshold=0.7)
+    composite = CompositeGrader([command, JudgeGrader(model="m", backend=_BoomBackend())], threshold=0.7)
+    result = composite.evaluate(TaskSpec(id="t", instruction="x"), environment, [])
+    # Command 0.5 + abstaining judge 0.0 -> 0.25, below the 0.7 line. With the
+    # old score=1.0 abstention the mean would have been 0.75 and the trial passed.
+    assert result.score == 0.25
+    assert result.success is False

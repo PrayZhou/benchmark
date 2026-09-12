@@ -50,14 +50,22 @@ Each builder receives the validated `TaskSpec`. The solver stores the serialized
   time and reports `verifier_tampering` when they change, `verifier_copy` when a
   workspace file matches a protected file, `destructive_command`,
   `evaluation_dos`, and the task-declared `forbidden_path` / `forbidden_command`
-  / `network_attempt`. With `fail_closed: true` (default) any finding at or
+  / `network_attempt`. It also records a `truncated_evidence` uncertainty when a
+  recorded `tool_result` carries the trace truncation marker. With
+  `fail_closed: true` (default) any finding at or
   above `severity_threshold` (default `medium`) fails the trial with
   `failure_category: "policy_violation"`, which is deliberately not retryable.
+  The `verifier_copy` scan is bounded: it caps at 5000 workspace files, skips
+  files over 1 MiB and skips symlinks, so a flooding agent can evade that
+  specific check. The task-directory tampering check is unaffected.
 - `JudgeGrader` (`grader_type: judge`) is an optional single-call LLM check. It
   is only constructed when a task selects it, so the default path never touches
   the network. Backend failures and unparseable output become
-  `judge_unavailable` / `judge_error` uncertainties rather than failures.
+  `judge_unavailable` / `judge_error` uncertainties rather than failures, and
+  score `0.0`: an abstaining judge is advisory and cannot inflate a
+  `threshold`-mode composite it takes part in.
 - Uncertainties (`near_threshold`, `grader_disagreement`,
-  `integrity_unavailable`, `judge_low_confidence`, ...) never change the score
+  `integrity_unavailable`, `truncated_evidence`, `judge_low_confidence`, ...)
+  never change the score
   or success of a trial. The built-in `kind` vocabulary above is extensible by
   task-declared rules.
