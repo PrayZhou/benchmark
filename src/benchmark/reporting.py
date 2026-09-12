@@ -5,6 +5,10 @@ from pathlib import Path
 
 from .schemas import RunSummary, TrialResult
 
+# Shape version of ``report.json``. The run manifest carries its own, separate
+# version; a consumer that only reads the report still needs compatibility.
+REPORT_SCHEMA_VERSION = "1"
+
 
 def group_key(result: TrialResult) -> str:
     """Identity of the logical trial a result belongs to.
@@ -70,6 +74,7 @@ def write_report(results: list[TrialResult], output_dir: Path, *, dataset: str |
     output_dir.mkdir(parents=True, exist_ok=True)
     summary = summarize(results)
     payload = {
+        "schema_version": REPORT_SCHEMA_VERSION,
         "dataset": dataset,
         "summary": summary.model_dump(mode="json"),
         "trials": [result.model_dump(mode="json") for result in results],

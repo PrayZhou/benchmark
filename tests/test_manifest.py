@@ -42,6 +42,13 @@ def test_manifest_persists_trial(tmp_path: Path) -> None:
     assert '"trial_id": "tr"' in path.read_text()
 
 
+def test_manifest_declares_a_schema_version(tmp_path: Path) -> None:
+    task = TaskSpec(id="t", instruction="do it")
+    payload = json.loads(RunManifest("run", [task], root=tmp_path).write().read_text())
+    # v2: violations/uncertainties are list[Finding], not list[str].
+    assert payload["schema_version"] == "2"
+
+
 def test_manifest_header_carries_run_fingerprints(tmp_path: Path) -> None:
     task = TaskSpec(
         id="t", instruction="x", agent="llm",

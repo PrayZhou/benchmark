@@ -237,6 +237,7 @@ def test_report_keeps_every_attempt_for_audit(tmp_path: Path) -> None:
         _attempt("f2", "g5", 2, success=True),
     ], tmp_path)
     payload = json.loads(path.read_text())
+    assert payload["schema_version"] == "1"
     assert payload["summary"]["total"] == 1
     assert payload["summary"]["success_rate"] == 1.0
     assert len(payload["trials"]) == 2

@@ -87,16 +87,25 @@ document does not repeat them.
 - `PolicyGrader` (`grader_type: policy`) runs deterministic checks without any
   network: it snapshots the task directory's protected files at construction
   time and reports `verifier_tampering` when they change, `verifier_copy` when a
-  workspace file matches a protected file, `destructive_command`,
+  workspace file matches a protected file, `reference_solution_access` when an
+  action names the task directory or the bare `oracle.sh`, `destructive_command`,
   `evaluation_dos`, and the task-declared `forbidden_path` / `forbidden_command`
-  / `network_attempt`. It also records a `truncated_evidence` uncertainty when a
-  recorded `tool_result` carries the trace truncation marker. With
-  `fail_closed: true` (default) any finding at or
+  / `network_attempt`. The protected set is `tests/`, `solution/`, `oracle/`, and
+  the task-root `oracle.sh`: the reference solution is part of the answer key, so
+  it is protected from both copying and being read (the verifier's
+  task-relative `tests/test.sh` is covered through the task-directory marker, so
+  an agent that writes and runs its own `tests/test.sh` is not flagged).
+  `reference_solution_access` can be turned off per task with
+  `grader.forbid_reference_access: false`. It also records a
+  `truncated_evidence` uncertainty when a recorded `tool_result` carries the
+  trace truncation marker. With `fail_closed: true` (default) any finding at or
   above `severity_threshold` (default `medium`) fails the trial with
   `failure_category: "policy_violation"`, which is deliberately not retryable.
   The `verifier_copy` scan is bounded: it caps at 5000 workspace files, skips
   files over 1 MiB and skips symlinks, so a flooding agent can evade that
   specific check. The task-directory tampering check is unaffected.
+  Task-declared `forbidden_paths` remain the way to block reads of other
+  answer-bearing files a task may ship.
 - `JudgeGrader` (`grader_type: judge`) is an optional single-call LLM check. It
   is only constructed when a task selects it, so the default path never touches
   the network. Backend failures and unparseable output become

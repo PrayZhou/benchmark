@@ -24,7 +24,7 @@
 - artifact 落盘上限（单文件 / 总量 / 数量）与 ignore 规则，轨迹 JSONL 按字符截断
 - 结构化日志（`--log-level` / `--log-json`），核心链路带 `run_id` / `trial_id` 上下文
 - SQLite 跨 run 索引与横向对比（`benchmark index` / `benchmark compare`）：索引 schema v2，`trials` 增加 `violations` / `uncertainties` / `violation_count`，`runs` 增加 `violation_count` / `uncertain_trials`；旧库（含 `PRAGMA user_version = 0`）在打开时自动迁移；`compare --violations` 只比较「任一次 attempt 记录过 violation」的 run（与按最终 attempt 计的成功率口径不同，见「统计口径」）
-- CI（ruff lint + mypy 类型检查 + pytest）与 `uv.lock` 依赖锁
+- CI（ruff lint + mypy 类型检查 + pytest + `benchmark oracle` 任务集自检）与 `uv.lock` 依赖锁
 - 可扩展的 CLI
 
 ## 快速开始
@@ -100,7 +100,8 @@ outcome 指标（`success_rate` / `average_score` / `failures_by_category`）始
 
 ## 工程化与可观测性
 
-- 质量门禁：`make check` 依次执行 `ruff check`、`mypy`、`pytest`；CI（`.github/workflows/ci.yml`）在 Python 3.11 / 3.12 上跑同一组检查，并用 `uv lock --check` 确认锁文件未漂移。
+- 质量门禁：`make check` 依次执行 `ruff check`、`mypy`、`pytest`、`benchmark oracle`（任务集自洽性）；CI（`.github/workflows/ci.yml`）在 Python 3.11 / 3.12 上跑同一组检查，并用 `uv lock --check` 确认锁文件未漂移。
+- 产物版本号：`manifest.json` 的 `schema_version` 为 `"2"`（`violations` / `uncertainties` 由 `list[str]` 变为 `list[Finding]`，与 v1 不兼容）；`report.json` 自带 `schema_version`（当前 `"1"`）；artifact `index.json` 的版本号独立（当前 `"1"`）；SQLite 跨 run 索引为 schema v2。外部消费者应据各自版本号判断兼容性，而不要假定三者同步演进。
 - 日志：核心模块使用 `benchmark.*` 命名空间的标准 `logging`，导入库时不会配置 root logger；CLI 用 `--log-level` 与 `--log-json` 打开。日志只记录 id、计数和异常类型，不写入 prompt、stdout 或凭证。
 - 跨 run 索引：`benchmark index RUN_DIR… --db reports/index.sqlite3` 把若干 run 目录的 run/trial 摘要写入 SQLite；`benchmark compare [RUN_ID…]` 读取该库做横向对比（默认附按 task 的成功率矩阵，`--no-tasks` 关闭）。索引幂等，同一 `run_id` 重复写入只更新不重复。
 - 体积上限：`ArtifactStore` 默认忽略 `.git` / `__pycache__` / `node_modules` 等路径，并受 `RunConfig.artifact_max_files` / `artifact_max_file_bytes` / `artifact_max_total_bytes` 约束，被跳过的文件记入 `index.json` 的 `skipped_counts`。轨迹 JSONL 的每个字符串受 `RunConfig.trace_max_chars` 截断，截断处保留长度标记，避免单条命令写出无上限的 trace。
@@ -147,6 +148,7 @@ TaskSpec → Runner → AgentAdapter ↔ EnvironmentAdapter → Independent Grad
 - **`claude` / `codex` profiles 未经真实 CLI 验证。** 开发主机未安装任何编码 CLI，网络出口也被阻断，`profiles.py` 中的预设只编码了文档记载的非交互式调用方式，尚未对真实命令行运行过；使用前请按本机安装的 CLI 版本确认。
 - **`LocalEnvironment` 仍然不是安全沙箱。** 把它降级为显式 opt-in 只是减少误用，并不等于安全。staging 会把 `tasks/<name>/workspace/` 拷进 trial 工作区；符号链接不会被跟随（也不会被复制），因此 fixture 无法越过自己的目录树。
 - **`makefile_target` 的 verifier 按文本检查 recipe 声明的输入。** 它在 Makefile 的 tab 缩进行里要求出现 `$(INPUT)` 或字面量 `input.txt`；因此惯用的 `sort $< > $(OUTPUT)` 会被拒绝，必须写成 instruction 中给出的 `$(INPUT)` / `input.txt` 形式。
+- **参考解访问检测已实现，但尚未在随附任务上启用。** `PolicyGrader` 现在把 task 根的 `oracle.sh` 纳入受保护基线（可检测改写/复制）并新增 `reference_solution_access` 违规（命令引用 task 目录或 `oracle.sh` 即 fail-closed）。但 `tasks/` 下的任务仍使用默认的 command grader，只有显式 `grader_type: policy` 才走这条路径；若要与正确性 verifier 同时生效，需要一个 composite grader，而把 `tests/test.sh` 注入 composite 子 grader 的加载逻辑尚未实现。因此该规则当前是「可用的能力」，不是任务集的实际防线。
 
 ## 后续路线
 

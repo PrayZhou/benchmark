@@ -37,3 +37,9 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+      - name: Task-set self-consistency
+        # Every task that ships an oracle.sh must pass the verifier it ships
+        # with; a task with no oracle is a skip, not a failure. Without this
+        # step the reference task set is unprotected in CI.
+        run: uv run python -m benchmark oracle --tasks-root tasks --output reports/oracles

@@ -28,6 +28,10 @@ DEFAULT_IGNORE: tuple[str, ...] = (
 # Cap the number of skip records kept in the index; counts stay exact.
 MAX_SKIP_RECORDS = 100
 
+# Shape version of the per-artifact ``index.json``. Independent of the run
+# manifest version: the two documents change for different reasons.
+ARTIFACT_INDEX_SCHEMA_VERSION = "1"
+
 # Packages whose versions materially change a run's semantics.
 _FINGERPRINT_PACKAGES = ("agent-benchmark", "pydantic", "pyyaml", "openai")
 
@@ -190,7 +194,7 @@ class ArtifactStore:
         """Persist the hash index so artifacts stay verifiable after the run."""
         path = self.root / "index.json"
         payload = {
-            "schema_version": "1",
+            "schema_version": ARTIFACT_INDEX_SCHEMA_VERSION,
             "files": [self.index[key] for key in sorted(self.index)],
             "limits": {
                 "max_files": self.max_files,
@@ -208,7 +212,9 @@ class ArtifactStore:
 
 
 class RunManifest:
-    schema_version = "1"
+    # v2: ``violations``/``uncertainties`` changed from ``list[str]`` to
+    # ``list[Finding]`` objects, so a v1 consumer cannot read a v2 manifest.
+    schema_version = "2"
 
     def __init__(
         self,

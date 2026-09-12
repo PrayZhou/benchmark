@@ -103,6 +103,7 @@ def build_grader(task: TaskSpec) -> Grader:
             forbidden_paths=task.grader.get("forbidden_paths"),
             forbidden_commands=task.grader.get("forbidden_commands"),
             forbidden_network=bool(task.grader.get("forbidden_network", False)),
+            forbid_reference_access=bool(task.grader.get("forbid_reference_access", True)),
             fail_closed=bool(task.grader.get("fail_closed", True)),
             severity_threshold=task.grader.get("severity_threshold", "medium"),
         )
