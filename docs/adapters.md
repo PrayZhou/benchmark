@@ -39,3 +39,25 @@ task = build_inspect_task(
 ```
 
 Each builder receives the validated `TaskSpec`. The solver stores the serialized `TrialResult` in Inspect state metadata, and the scorer maps its score, success answer, status, and result metadata to an Inspect `Score`. Install the optional dependency with `pip install inspect-ai`; importing the integration module itself remains safe without it.
+
+## Behavioral findings
+
+`GraderResult.violations` and `GraderResult.uncertainties` carry structured
+`Finding` records (`kind`, `severity`, `source`, `evidence`, `step`).
+
+- `PolicyGrader` (`grader_type: policy`) runs deterministic checks without any
+  network: it snapshots the task directory's protected files at construction
+  time and reports `verifier_tampering` when they change, `verifier_copy` when a
+  workspace file matches a protected file, `destructive_command`,
+  `evaluation_dos`, and the task-declared `forbidden_path` / `forbidden_command`
+  / `network_attempt`. With `fail_closed: true` (default) any finding at or
+  above `severity_threshold` (default `medium`) fails the trial with
+  `failure_category: "policy_violation"`, which is deliberately not retryable.
+- `JudgeGrader` (`grader_type: judge`) is an optional single-call LLM check. It
+  is only constructed when a task selects it, so the default path never touches
+  the network. Backend failures and unparseable output become
+  `judge_unavailable` / `judge_error` uncertainties rather than failures.
+- Uncertainties (`near_threshold`, `grader_disagreement`,
+  `integrity_unavailable`, `judge_low_confidence`, ...) never change the score
+  or success of a trial. The built-in `kind` vocabulary above is extensible by
+  task-declared rules.

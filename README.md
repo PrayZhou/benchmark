@@ -132,5 +132,5 @@ TaskSpec → Runner → AgentAdapter ↔ EnvironmentAdapter → Independent Grad
 ## 后续路线
 
 1. `DockerEnvironment` 尚无测试；注入式 backend 已就绪，`LLMAdapter` 已由 `tests/test_llm_adapter.py` 覆盖。
-2. `GraderResult.violations` / `uncertainties` 目前没有任何 grader 产出，安全违规上报仍是空壳。
+2. `GraderResult.violations` / `uncertainties` 由 `PolicyGrader`（确定性）与可选的 `JudgeGrader`（LLM）产出：行为违规默认 fail-closed（`failure_category="policy_violation"`，不重试），不确定性只标注置信度、不改变判分。
 3. Harbor、BrowserGym、OSWorld、MCP 和固定拓扑 multi-agent 仍是诚实 scaffold：`adapters.errors.unavailable` 统一了「缺可选依赖」与「依赖已装但未接线」两种拒绝，`agent: mcp` / `environment_type: mcp` / `agent: multi_agent` 路由已对称；真实 SDK 桥接待实现。
