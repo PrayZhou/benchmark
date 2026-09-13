@@ -6,7 +6,8 @@ import pytest
 
 from benchmark.adapters.environments.docker import DockerEnvironment
 from benchmark.adapters.environments.local import LocalEnvironment
-from benchmark.schemas import TaskSpec
+from benchmark.factories import build_grader
+from benchmark.schemas import TaskSpec, TraceEvent
 from benchmark.tasks import TaskDirectoryError, discover_tasks, load_task_dir, stage_workspace
 
 
@@ -63,6 +64,67 @@ def test_duplicate_verifier_is_rejected(tmp_path: Path) -> None:
     directory = make_task_dir(tmp_path, spec="grader:\n  command: [bash, -lc, 'true']\n")
     with pytest.raises(TaskDirectoryError, match="verifier is defined in both"):
         load_task_dir(directory)
+
+
+def test_composite_grader_injects_the_verifier_as_a_command_sub_grader(tmp_path: Path) -> None:
+    directory = make_task_dir(
+        tmp_path,
+        spec="grader_type: composite\ngrader:\n  graders:\n    - type: policy\n",
+    )
+
+    task = load_task_dir(directory)
+
+    assert task.grader_type == "composite"
+    assert [item["type"] for item in task.grader["graders"]] == ["policy", "command"]
+    command = task.grader["graders"][1]["command"]
+    assert command[:2] == ["bash", "-c"]
+    assert "test -f out.txt" in command[2]
+
+
+def test_composite_grader_rejects_a_duplicate_command_sub_grader(tmp_path: Path) -> None:
+    directory = make_task_dir(
+        tmp_path,
+        spec="grader_type: composite\ngrader:\n  graders:\n"
+             "    - type: command\n      command: [bash, -lc, 'true']\n",
+    )
+    with pytest.raises(TaskDirectoryError, match="verifier is defined in both"):
+        load_task_dir(directory)
+
+
+def test_composite_grader_requires_a_sub_grader(tmp_path: Path) -> None:
+    directory = make_task_dir(tmp_path, verifier=None, spec="grader_type: composite\n")
+    with pytest.raises(TaskDirectoryError, match="needs at least one sub-grader"):
+        load_task_dir(directory)
+
+
+def test_composite_grader_rejects_non_list_graders(tmp_path: Path) -> None:
+    directory = make_task_dir(tmp_path, spec="grader_type: composite\ngrader:\n  graders: nope\n")
+    with pytest.raises(TaskDirectoryError, match="grader.graders must be a list"):
+        load_task_dir(directory)
+
+
+def test_composite_grader_fails_closed_on_reference_access(tmp_path: Path) -> None:
+    directory = make_task_dir(
+        tmp_path, verifier="true",
+        spec="grader_type: composite\ngrader:\n  graders:\n    - type: policy\n",
+    )
+    (directory / "oracle.sh").write_text("the reference solution\n")
+    task = load_task_dir(directory)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    class _Environment:
+        root = workspace
+
+    events = [TraceEvent(type="action", step=0, payload={
+        "type": "command", "command": ["cat", str(directory / "oracle.sh")],
+    })]
+    result = build_grader(task).evaluate(task, _Environment(), events)
+
+    # The verifier ("true") passes; only the policy sub-grader can fail this.
+    assert result.success is False
+    assert result.failure_category == "policy_violation"
+    assert "reference_solution_access" in [finding.kind for finding in result.violations]
 
 
 def test_missing_instruction_is_rejected(tmp_path: Path) -> None:
@@ -131,6 +193,18 @@ def test_repository_hello_task_loads_and_runs(tmp_path: Path) -> None:
         trial_id="hello",
     )
     assert result.success is True
+
+
+def test_repository_tasks_enable_the_reference_access_gate() -> None:
+    """The shipped tasks must keep policy + verifier wired together."""
+    tasks_root = Path(__file__).resolve().parents[1] / "tasks"
+    gated = {"bugs.fix_fizzbuzz", "build.makefile_target", "data.parse_log_counts", "repro.seed_reproducible"}
+    discovered = {task.id: task for task in discover_tasks(tasks_root)}
+    assert gated <= set(discovered)
+    for task_id in sorted(gated):
+        task = discovered[task_id]
+        assert task.grader_type == "composite", task_id
+        assert [item["type"] for item in task.grader["graders"]] == ["policy", "command"], task_id
 
 
 def test_stage_workspace_copies_the_fixture_tree_into_the_root(tmp_path: Path) -> None:

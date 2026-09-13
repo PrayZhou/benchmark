@@ -11,12 +11,14 @@
 - scripted agent baseline
 - `agent: cli` 通用编码 CLI 适配器（`CLIAgent`），以 `argv` / `stdin` / `prompt_file` 三种模式投递 prompt，`profiles.py` 提供 `claude` / `codex` 起始配置；它在宿主机执行，因此要求 `environment_type: local`
 - 任务集：`tasks/` 下 4 个任务（`fix_fizzbuzz` / `parse_log_counts` / `makefile_target` / `seed_reproducible`），每个都带 `oracle.sh` 参考解；`configs/tasks.yaml` 通过 `tasks_root` 加载
+- 4 个任务均用 `grader_type: composite`：`PolicyGrader` 行为门禁 + 自动注入的 `tests/test.sh` verifier。`PolicyGrader` 把 task 根的 `oracle.sh` 纳入受保护基线（改写/删除报 `verifier_tampering`、复制进工作区报 `verifier_copy`），并对引用 task 目录或 `oracle.sh` 的命令报 `reference_solution_access`（high、fail-closed）
 - `benchmark oracle --tasks-root tasks`：对每个任务运行其 oracle 与自带 verifier，任一任务失败则以非零码退出（任务集自洽性自检）
 - `provider` 名称真正选择 LLM backend（`openai` / `openai-compatible`，未配置时回退默认；未知名称在构建期报错，不再静默走 OpenAI 兼容）
 - `RunConfig.dataset` 作为 provenance 写入 `report.json` 与 SQLite 索引，并可用 `benchmark compare --dataset` 过滤
 - observation/action/tool-result JSONL trajectory
 - `replay` 真正重放已记录的动作并与轨迹结果对比；`regrade` 基于 artifact 快照重评分（二者语义分离，见下）
 - command grader（支持部分分）与 state grader；composite grader 支持权重与阈值
+- 任务目录用 `grader_type: composite` 时，`tests/test.sh` 会自动注入为 command 子 grader，因此行为门禁与正确性检查可同时生效，而 verifier 仍只有一份
 - trial 结果和汇总报告（按 trial 分组，重试不稀释成功率）
 - 重试默认覆盖模型/网关错误（`runner_error` / `environment_error` / `timeout` / `error`）
 - run manifest 与带 sha256 的 artifact 索引
@@ -70,7 +72,7 @@ tasks/hello_task/
   Dockerfile        # 可选环境基线
 ```
 
-在 `task.yaml` 里重复定义 `instruction` 或 `grader.command` 会被显式拒绝，避免两份副本各自漂移。
+在 `task.yaml` 里重复定义 `instruction` 或 `grader.command` 会被显式拒绝，避免两份副本各自漂移。唯一的例外是 `grader_type: composite`：`task.yaml` 只声明行为子 grader（如 `- type: policy`），`tests/test.sh` 由加载器自动注入为 command 子 grader，因此 verifier 仍只有一份，同时行为门禁与正确性检查都会执行。
 
 run config 通过目录引用任务：
 
@@ -148,7 +150,7 @@ TaskSpec → Runner → AgentAdapter ↔ EnvironmentAdapter → Independent Grad
 - **`claude` / `codex` profiles 未经真实 CLI 验证。** 开发主机未安装任何编码 CLI，网络出口也被阻断，`profiles.py` 中的预设只编码了文档记载的非交互式调用方式，尚未对真实命令行运行过；使用前请按本机安装的 CLI 版本确认。
 - **`LocalEnvironment` 仍然不是安全沙箱。** 把它降级为显式 opt-in 只是减少误用，并不等于安全。staging 会把 `tasks/<name>/workspace/` 拷进 trial 工作区；符号链接不会被跟随（也不会被复制），因此 fixture 无法越过自己的目录树。
 - **`makefile_target` 的 verifier 按文本检查 recipe 声明的输入。** 它在 Makefile 的 tab 缩进行里要求出现 `$(INPUT)` 或字面量 `input.txt`；因此惯用的 `sort $< > $(OUTPUT)` 会被拒绝，必须写成 instruction 中给出的 `$(INPUT)` / `input.txt` 形式。
-- **参考解访问检测已实现，但尚未在随附任务上启用。** `PolicyGrader` 现在把 task 根的 `oracle.sh` 纳入受保护基线（可检测改写/复制）并新增 `reference_solution_access` 违规（命令引用 task 目录或 `oracle.sh` 即 fail-closed）。但 `tasks/` 下的任务仍使用默认的 command grader，只有显式 `grader_type: policy` 才走这条路径；若要与正确性 verifier 同时生效，需要一个 composite grader，而把 `tests/test.sh` 注入 composite 子 grader 的加载逻辑尚未实现。因此该规则当前是「可用的能力」，不是任务集的实际防线。
+- **参考解访问检测基于命令文本，可被混淆绕过。** 4 个任务已通过 composite grader 启用 `PolicyGrader`：改写/删除 `oracle.sh`、把它复制进工作区、以及按绝对路径引用 task 目录或 `oracle.sh` 都会 fail-closed。但检测是确定性字符串匹配，agent 若用变量拼接、编码或 `find` 动态定位参考解路径仍可能绕过这一层；只能真正缓解的手段是独立 verifier 沙箱（只把声明的 artifact 传给它），尚未实现。
 
 ## 后续路线
 

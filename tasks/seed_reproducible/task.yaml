@@ -1,6 +1,10 @@
 id: repro.seed_reproducible
 environment_type: local
 seed: 4242
+grader_type: composite
+grader:
+  graders:
+    - type: policy
 limits:
   max_steps: 8
   timeout_seconds: 45

@@ -19,6 +19,10 @@ A task directory is the single source of truth for one task:
 
 Defining ``instruction`` or ``grader.command`` in ``task.yaml`` while the
 corresponding file exists is rejected: two copies of the same fact drift apart.
+``grader_type: composite`` is the structured exception: the behavioral
+sub-graders stay in ``task.yaml`` and the ``tests/test.sh`` verifier is injected
+as the command sub-grader, so a policy gate and the correctness check run
+together without duplicating the verifier.
 """
 from __future__ import annotations
 
@@ -77,18 +81,38 @@ def load_task_dir(directory: Path) -> TaskSpec:
     if not spec.get("instruction"):
         raise TaskDirectoryError(f"{directory}: missing {INSTRUCTION_FILE} and no instruction in {SPEC_FILE}")
 
+    grader_type = spec.get("grader_type", "command")
     grader = dict(spec.get("grader") or {})
     verifier_path = directory / VERIFIER_FILE
     if verifier_path.exists():
-        if grader.get("command"):
-            raise TaskDirectoryError(
-                f"{directory}: verifier is defined in both {VERIFIER_FILE} and {SPEC_FILE}; "
-                f"keep it only in {VERIFIER_FILE}"
-            )
-        grader["command"] = ["bash", "-c", verifier_path.read_text(encoding="utf-8")]
+        verifier_command = ["bash", "-c", verifier_path.read_text(encoding="utf-8")]
+        if grader_type == "composite":
+            # A composite grader keeps its behavioral sub-graders in task.yaml
+            # and gets the correctness verifier injected here, so tests/test.sh
+            # stays the single source of truth for the verifier.
+            configured = grader.get("graders")
+            if configured is not None and not isinstance(configured, list):
+                raise TaskDirectoryError(f"{directory}: grader.graders must be a list")
+            graders = list(configured or [])
+            if any(isinstance(item, dict) and item.get("type") == "command" for item in graders):
+                raise TaskDirectoryError(
+                    f"{directory}: verifier is defined in both {VERIFIER_FILE} and a composite "
+                    f"command sub-grader in {SPEC_FILE}; keep it only in {VERIFIER_FILE}"
+                )
+            graders.append({"type": "command", "command": verifier_command})
+            grader["graders"] = graders
+        else:
+            if grader.get("command"):
+                raise TaskDirectoryError(
+                    f"{directory}: verifier is defined in both {VERIFIER_FILE} and {SPEC_FILE}; "
+                    f"keep it only in {VERIFIER_FILE}"
+                )
+            grader["command"] = verifier_command
+    if grader_type == "composite" and not grader.get("graders"):
+        raise TaskDirectoryError(f"{directory}: composite grader needs at least one sub-grader")
     if grader:
         spec["grader"] = grader
-    elif spec.get("grader_type", "command") == "command":
+    elif grader_type == "command":
         raise TaskDirectoryError(f"{directory}: missing {VERIFIER_FILE} and no grader.command in {SPEC_FILE}")
 
     dockerfile = directory / DOCKERFILE

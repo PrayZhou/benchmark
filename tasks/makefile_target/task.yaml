@@ -1,6 +1,10 @@
 id: build.makefile_target
 environment_type: local
 seed: 303
+grader_type: composite
+grader:
+  graders:
+    - type: policy
 limits:
   max_steps: 12
   timeout_seconds: 60

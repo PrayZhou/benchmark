@@ -105,7 +105,10 @@ document does not repeat them.
   files over 1 MiB and skips symlinks, so a flooding agent can evade that
   specific check. The task-directory tampering check is unaffected.
   Task-declared `forbidden_paths` remain the way to block reads of other
-  answer-bearing files a task may ship.
+  answer-bearing files a task may ship. The reference task set enables this gate
+  by pairing `- type: policy` with the injected verifier under
+  `grader_type: composite`, so reference-solution access fails a task that would
+  otherwise satisfy its verifier.
 - `JudgeGrader` (`grader_type: judge`) is an optional single-call LLM check. It
   is only constructed when a task selects it, so the default path never touches
   the network. Backend failures and unparseable output become
