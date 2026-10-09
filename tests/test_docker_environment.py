@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil as _shutil
 import subprocess as _subprocess
@@ -36,6 +37,7 @@ def test_reset_argv_pins_security_flags(tmp_path: Path) -> None:
     run = next(args for args in recorded if args[0] == "run")
     for flag in ("--network", "none", "--user", "--cap-drop", "ALL", "--security-opt", "no-new-privileges"):
         assert flag in run
+    _assert_security_flags(run)
     assert f"{tmp_path.resolve()}:/workspace:rw" in run
 
 
@@ -51,6 +53,7 @@ def test_verify_command_mounts_read_only(tmp_path: Path) -> None:
     environment.reset(TaskSpec(id="t", instruction="x"))
     environment.verify_command(["true"])
     verify = next(args for args in recorded if args[0] == "run" and "--rm" in args)
+    _assert_security_flags(verify)
     assert f"{tmp_path.resolve()}:/workspace:ro" in verify
     assert "--network" in verify and verify[verify.index("--network") + 1] == "none"
 
@@ -88,7 +91,14 @@ def _daemon_available() -> bool:
     return done.returncode == 0
 
 
-integration = pytest.mark.skipif(not _daemon_available(), reason="docker daemon not available")
+@pytest.fixture
+def docker_image() -> str:
+    if not _daemon_available():
+        pytest.skip("docker daemon not available")
+    image = os.getenv("BENCHMARK_TEST_IMAGE", "python:3.12-slim")
+    if not _image_available(image):
+        pytest.skip(f"base image unavailable: {image}")
+    return image
 
 
 def _pull_env(binary: str) -> dict[str, str]:
@@ -156,30 +166,64 @@ def test_image_available_treats_a_hung_pull_as_unavailable(monkeypatch) -> None:
     assert pull_timeouts and pull_timeouts[0] is not None and pull_timeouts[0] <= 60
 
 
-@integration
-def test_container_runs_commands_and_verifier_is_read_only(tmp_path: Path) -> None:
-    image = os.getenv("BENCHMARK_TEST_IMAGE", "python:3.12-slim")
-    if not _image_available(image):
-        pytest.skip("base image unavailable offline")
-    environment = DockerEnvironment(tmp_path, image=image, command_timeout=30)
+@pytest.mark.docker_integration
+def test_container_runs_commands_and_verifier_is_read_only(tmp_path: Path, docker_image: str) -> None:
+    # pytest creates mode-0700 directories. Let the container's non-root user
+    # traverse this dedicated workspace; make the marker writable so a denied
+    # verifier write proves the mount is read-only, not merely a DAC denial.
+    tmp_path.chmod(0o755)
+    marker = tmp_path / "marker.txt"
+    marker.write_text("READY")
+    marker.chmod(0o666)
+    environment = DockerEnvironment(tmp_path, image=docker_image, command_timeout=30)
     environment.reset(TaskSpec(id="t", instruction="x", seed=7))
     try:
+        inspected = environment._docker(["inspect", environment.container_name], timeout=30)
+        config = json.loads(inspected.stdout)[0]
+        host = config["HostConfig"]
+        assert config["Config"]["User"] == "10001:10001"
+        assert host["NetworkMode"] == "none"
+        assert "ALL" in host["CapDrop"]
+        assert "no-new-privileges" in host["SecurityOpt"]
+        assert host["NanoCpus"] == 1_000_000_000
+        assert host["Memory"] == 512 * 1024 * 1024
+        assert host["PidsLimit"] == 128
+
+        writable = environment.execute({"type": "command", "command": ["sh", "-c", "printf READY > marker.txt"]})
+        assert writable["returncode"] == 0, writable
         ok = environment.execute({"type": "command", "command": ["sh", "-c", "printf READY"]})
         assert ok["returncode"] == 0 and ok["stdout"] == "READY"
 
         bad = environment.execute({"type": "command", "command": ["sh", "-c", "exit 3"]})
         assert bad["returncode"] == 3 and bad["ok"] is False
 
-        (tmp_path / "marker.txt").write_text("READY")
         verified = environment.verify_command(["sh", "-c", "cat marker.txt"])
-        assert verified.stdout.strip() == "READY"
+        assert verified.returncode == 0 and verified.stdout.strip() == "READY", verified
 
         denied = environment.verify_command(["sh", "-c", "printf x >> marker.txt"])
         assert denied.returncode != 0, "verifier must not be able to write the workspace"
+        assert "Read-only file system" in denied.stderr, denied
+        assert marker.read_text() == "READY"
+        verifier_gone = environment._docker(
+            ["container", "ls", "-aq", "--filter", f"name=^{environment.container_name}-verifier$"],
+            timeout=30,
+        )
+        assert not verifier_gone.stdout.strip(), "verifier container must be removed"
     finally:
         environment.cleanup()
 
     # The spec requires cleanup to remove the container, not just stop it.
-    gone = _subprocess.run([resolve_docker_binary(), "inspect", environment.container_name],
-                           capture_output=True, timeout=30, check=False)
-    assert gone.returncode != 0, "cleanup must remove the container"
+    gone = environment._docker(
+        ["container", "ls", "-aq", "--filter", f"name=^{environment.container_name}$"], timeout=30,
+    )
+    assert not gone.stdout.strip(), "cleanup must remove the container"
+    environment.cleanup()  # teardown is idempotent
+
+
+def _assert_security_flags(args: list[str]) -> None:
+    for flag, value in {
+        "--network": "none", "--user": "10001:10001", "--cpus": "1.0",
+        "--memory": "512m", "--pids-limit": "128", "--cap-drop": "ALL",
+        "--security-opt": "no-new-privileges",
+    }.items():
+        assert args[args.index(flag) + 1] == value

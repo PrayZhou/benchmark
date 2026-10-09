@@ -144,7 +144,21 @@ TaskSpec → Runner → AgentAdapter ↔ EnvironmentAdapter → Independent Grad
 
 以下限制是当前实现的真实边界，逐条记录在案，不做能力上的过度声明：
 
-- **Docker 集成测试会在没有 daemon 或基础镜像时 SKIP。** `tests/test_docker_environment.py` 的集成用例在 `resolve_docker_binary` 找不到可用 daemon 时跳过；镜像不可得时同样跳过（默认 `python:3.12-slim`，可用 `BENCHMARK_TEST_IMAGE` 覆盖）。首次真实运行需要一次镜像拉取，而本内网主机没有缓存镜像、拉取被阻断，因此在把 `BENCHMARK_TEST_IMAGE` 指向本地/内网镜像之前，真实容器路径不会被实际执行。安全相关参数的单元测试通过注入 fake docker runner 完成，不需要 daemon。
+- **Docker 集成测试在本地可跳过，在 CI 必须执行成功。** 默认 `uv run pytest` 在 daemon 或镜像不可用时跳过真实容器测试；安全参数单元测试不需要 Docker。`pytest -m "not docker_integration"` 完全不探测 Docker。CI 的独立 `Docker integration (3.11)` / `Docker integration (3.12)` job 显式检查 daemon、拉取并检查基础镜像，再用 `--require-docker` 运行真实容器测试：skip、xfail、未选中集成测试或仅收集不执行均不能通过。测试报告以 JUnit artifact 保留。建议将这两个 job 加入分支保护的 required status checks；工作流本身不能设置分支保护。
+
+  本地复现 CI（默认镜像 `python:3.12-slim`，可替换为包含 Python、sh 和 sleep 的本地/内网镜像）：
+
+  ```bash
+  uv sync --locked --extra dev --python 3.12
+  export BENCHMARK_TEST_IMAGE=python:3.12-slim
+  docker version
+  docker info
+  docker pull "$BENCHMARK_TEST_IMAGE"
+  docker image inspect "$BENCHMARK_TEST_IMAGE"
+  uv run pytest tests/test_docker_environment.py -m docker_integration --require-docker -v -ra
+  ```
+
+  集成测试检查运行中的安全参数、命令成功/失败返回码、Agent 可写与 Verifier 只读的差异，以及两种容器的清理。测试专用目录允许容器非 root 用户访问，marker 文件允许写入，以免把普通文件权限拒绝误当作只读挂载生效。
 - **`agent: cli` 要求 `environment_type: local`。** CLI 适配器在宿主机上直接启动进程；容器环境报告的是容器内路径（如 `/workspace`），宿主上并不存在。`build_agent` 在构建期拒绝 `agent: cli` 与非 `local` 的组合，容器内委托执行尚未实现。
 - **`agent: cli` 绕过 `LocalEnvironment` 的凭证白名单。** `CLIAgent` 用 `{**os.environ, **self.env}` 启动 CLI，因此保护 agent 派生任务命令的 env allowlist 不适用于这条路径：CLI（以及它派生的任何进程）能看到宿主上的全部环境变量，包括 `OPENAI_API_KEY` / `COMATE_API_KEY`。这是「在宿主机上运行真实编码 CLI」的固有代价，唯一真正的缓解手段是容器/沙箱或凭证代理；本限制只在选用 `agent: cli` 时成立。
 - **`claude` / `codex` profiles 未经真实 CLI 验证。** 开发主机未安装任何编码 CLI，网络出口也被阻断，`profiles.py` 中的预设只编码了文档记载的非交互式调用方式，尚未对真实命令行运行过；使用前请按本机安装的 CLI 版本确认。
@@ -154,6 +168,6 @@ TaskSpec → Runner → AgentAdapter ↔ EnvironmentAdapter → Independent Grad
 
 ## 后续路线
 
-1. Docker 路径已具备单元测试（注入 fake runner 固定安全参数）与一个受 daemon/镜像门控的集成测试；`LLMAdapter` 注入式 backend 由 `tests/test_llm_adapter.py` 覆盖。
+1. Docker 路径已具备单元测试（注入 fake runner 固定安全参数）与一个本地可跳过、CI 强制执行的集成测试；`LLMAdapter` 注入式 backend 由 `tests/test_llm_adapter.py` 覆盖。
 2. `GraderResult.violations` / `uncertainties` 由 `PolicyGrader`（确定性）与可选的 `JudgeGrader`（LLM）产出：行为违规默认 fail-closed（`failure_category="policy_violation"`，不重试），不确定性只标注置信度、不改变判分。
 3. Harbor、BrowserGym、OSWorld、MCP 和固定拓扑 multi-agent 仍是诚实 scaffold：`adapters.errors.unavailable` 统一了「缺可选依赖」与「依赖已装但未接线」两种拒绝，`agent: mcp` / `environment_type: mcp` / `agent: multi_agent` 路由已对称；真实 SDK 桥接待实现。

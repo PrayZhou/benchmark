@@ -36,10 +36,46 @@ jobs:
         run: uv run mypy
 
       - name: Test
-        run: uv run pytest
+        run: uv run pytest -m "not docker_integration"
 
       - name: Task-set self-consistency
         # Every task that ships an oracle.sh must pass the verifier it ships
         # with; a task with no oracle is a skip, not a failure. Without this
         # step the reference task set is unprotected in CI.
         run: uv run python -m benchmark oracle --tasks-root tasks --output reports/oracles
+
+  docker-integration:
+    name: Docker integration (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    env:
+      BENCHMARK_TEST_IMAGE: python:3.12-slim
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
+      - name: Check Docker daemon and prepare image
+        run: |
+          docker version
+          docker info
+          docker pull "$BENCHMARK_TEST_IMAGE"
+          docker image inspect "$BENCHMARK_TEST_IMAGE"
+      - name: Require real Docker integration tests
+        run: >-
+          uv run pytest tests/test_docker_environment.py
+          -m docker_integration --require-docker -v -ra
+          --junitxml=reports/docker-integration.xml
+      - name: Upload Docker test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-integration-${{ matrix.python-version }}
+          path: reports/docker-integration.xml
+          if-no-files-found: warn
